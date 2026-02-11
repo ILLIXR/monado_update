@@ -762,8 +762,13 @@ do_wait_frame_and_checks(struct oxr_logger *log,
 
 	XrTime converted_time = time_state_monotonic_to_ts_ns(sess->sys->inst->timekeeping, predicted_display_time);
 	if (converted_time <= 0) {
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		converted_time = 1;
+		printf("WARNING: converted_time <= 0\n");
+#else
 		return oxr_error(log, XR_ERROR_RUNTIME_FAILURE, "Got '%" PRIi64 "' from time_state_monotonic_to_ts_ns",
 		                 converted_time);
+#endif
 	}
 
 	*out_frame_id = frame_id;

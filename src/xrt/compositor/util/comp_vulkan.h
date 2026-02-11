@@ -57,6 +57,11 @@ struct comp_vulkan_arguments
 
 	//! Vulkan physical device index for clients to use, -1 for auto.
 	int client_gpu_index;
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	struct u_string_list *enabled_instance_extensions;
+	struct u_string_list *enabled_device_extensions;
+#endif
 };
 
 /*!
@@ -90,7 +95,11 @@ struct comp_vulkan_results
  */
 bool
 comp_vulkan_init_bundle(struct vk_bundle *vk,
-                        const struct comp_vulkan_arguments *vk_args,
+#ifdef USE_MONADO_ILLIXR_DRIVER
+			struct comp_vulkan_arguments *vk_args,
+#else
+    	                const struct comp_vulkan_arguments *vk_args,
+#endif
                         struct comp_vulkan_results *vk_res);
 
 

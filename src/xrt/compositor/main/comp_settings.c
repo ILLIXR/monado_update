@@ -107,8 +107,13 @@ comp_settings_init(struct comp_settings *s, struct xrt_device *xdev)
 #error "Need to pick default swapchain format for this platform!"
 #endif
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		add_format(s, VK_FORMAT_A8B8G8R8_UNORM_PACK32);
+
+#else
 		// Seen as the only sRGB format on some NVIDIA cards.
 		add_format(s, VK_FORMAT_A8B8G8R8_SRGB_PACK32);
+#endif
 	}
 
 	s->display = debug_get_num_option_xcb_display();

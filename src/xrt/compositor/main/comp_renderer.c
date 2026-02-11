@@ -47,7 +47,12 @@
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+#ifdef USE_MONADO_ILLIXR_DRIVER
+#include "../drivers/illixr/illixr_component.h"
 
+#define OFFLOAD_BUFFER_POOL_SIZE 3
+
+#endif
 
 /*
  *
@@ -86,6 +91,30 @@ enum comp_target_fov_source
 	 */
 	COMP_TARGET_FOV_SOURCE_DEVICE_VIEWS,
 };
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+/*!
+ *
+ */
+struct illixr_framebuffer
+{
+	// Color image
+	VkImage image;
+	VkImageView view;
+	VkDeviceMemory memory;
+	VkDeviceSize size;
+	VkDeviceSize offset;
+
+	// Depth image
+	VkImage depth_image;
+	VkImageView depth_view;
+	VkDeviceMemory depth_memory;
+	VkDeviceSize depth_size;
+	VkDeviceSize depth_offset;
+
+	VkExtent2D extent;
+};
+#endif
 
 /*!
  * Holds associated vulkan objects and state to render with a distortion.
@@ -150,6 +179,10 @@ struct comp_renderer
 	 */
 	uint32_t buffer_count;
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	struct illixr_framebuffer *illixr_framebuffers;
+	uint32_t illixr_framebuffer_count;
+#endif
 	//! @}
 };
 
@@ -206,6 +239,215 @@ scratch_get_fini(struct comp_render_scratch_state *crss, struct comp_renderer *r
  *
  */
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+// Helper to find memory type
+static uint32_t
+find_memory_type(struct vk_bundle *vk, uint32_t type_filter, VkMemoryPropertyFlags properties)
+{
+	VkPhysicalDeviceMemoryProperties mem_properties;
+	vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_properties);
+
+	for (uint32_t i = 0; i < mem_properties.memoryTypeCount; i++) {
+		if ((type_filter & (1 << i)) &&
+		    (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+			return i;
+		}
+	}
+
+	return 0;
+}
+
+// Create ILLIXR framebuffers with color + depth for both eyes
+static bool
+create_illixr_framebuffers(struct comp_renderer *r, uint32_t num_buffers_per_eye, VkExtent2D extent)
+{
+	struct vk_bundle *vk = &r->c->base.vk;
+
+	// We need 2 framebuffers per buffer (one per eye)
+	// Each framebuffer has color + depth
+	uint32_t total_framebuffers = num_buffers_per_eye * 2;
+
+	r->illixr_framebuffers = U_TYPED_ARRAY_CALLOC(struct illixr_framebuffer, total_framebuffers);
+	r->illixr_framebuffer_count = total_framebuffers;
+
+	for (uint32_t i = 0; i < total_framebuffers; i++) {
+		struct illixr_framebuffer *fb = &r->illixr_framebuffers[i];
+		fb->extent = extent;
+
+		// ===== COLOR IMAGE =====
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_B8G8R8A8_UNORM, // Match ILLIXR expectation
+		    .extent =
+		        {
+		            .width = extent.width,
+		            .height = extent.height,
+		            .depth = 1,
+		        },
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+		             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL, &fb->image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to create ILLIXR color image %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		// Allocate color memory
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, fb->image, &mem_reqs);
+
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex =
+		        find_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+		};
+
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &fb->memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to allocate ILLIXR color memory %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		fb->size = mem_reqs.size;
+		fb->offset = 0;
+
+		ret = vk->vkBindImageMemory(vk->device, fb->image, fb->memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to bind ILLIXR color memory %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		// Create color image view
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = fb->image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_B8G8R8A8_UNORM,
+		    .components =
+		        {
+		            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+		            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+		            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+		            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+		        },
+		    .subresourceRange =
+		        {
+		            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		            .baseMipLevel = 0,
+		            .levelCount = 1,
+		            .baseArrayLayer = 0,
+		            .layerCount = 1,
+		        },
+		};
+
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL, &fb->view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to create ILLIXR color view %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		// ===== DEPTH IMAGE =====
+		image_info.format = VK_FORMAT_D32_SFLOAT; // Or VK_FORMAT_D24_UNORM_S8_UINT
+		image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+		ret = vk->vkCreateImage(vk->device, &image_info, NULL, &fb->depth_image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to create ILLIXR depth image %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		// Allocate depth memory
+		vk->vkGetImageMemoryRequirements(vk->device, fb->depth_image, &mem_reqs);
+
+		alloc_info.allocationSize = mem_reqs.size;
+		alloc_info.memoryTypeIndex =
+		    find_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &fb->depth_memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to allocate ILLIXR depth memory %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		fb->depth_size = mem_reqs.size;
+		fb->depth_offset = 0;
+
+		ret = vk->vkBindImageMemory(vk->device, fb->depth_image, fb->depth_memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to bind ILLIXR depth memory %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		// Create depth image view
+		view_info.image = fb->depth_image;
+		view_info.format = VK_FORMAT_D32_SFLOAT;
+		view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL, &fb->depth_view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to create ILLIXR depth view %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		COMP_DEBUG(r->c, "Created ILLIXR framebuffer %u: color=%p depth=%p", i, (void *)fb->image,
+		           (void *)fb->depth_image);
+	}
+
+	COMP_INFO(r->c, "Created %u ILLIXR framebuffers (%u per eye)", total_framebuffers, num_buffers_per_eye);
+
+	return true;
+}
+
+// Destroy ILLIXR framebuffers
+static void
+destroy_illixr_framebuffers(struct comp_renderer *r)
+{
+	if (!r->illixr_framebuffers) {
+		return;
+	}
+
+	struct vk_bundle *vk = &r->c->base.vk;
+
+	for (uint32_t i = 0; i < r->illixr_framebuffer_count; i++) {
+		struct illixr_framebuffer *fb = &r->illixr_framebuffers[i];
+
+		if (fb->view != VK_NULL_HANDLE) {
+			vk->vkDestroyImageView(vk->device, fb->view, NULL);
+		}
+		if (fb->image != VK_NULL_HANDLE) {
+			vk->vkDestroyImage(vk->device, fb->image, NULL);
+		}
+		if (fb->memory != VK_NULL_HANDLE) {
+			vk->vkFreeMemory(vk->device, fb->memory, NULL);
+		}
+
+		if (fb->depth_view != VK_NULL_HANDLE) {
+			vk->vkDestroyImageView(vk->device, fb->depth_view, NULL);
+		}
+		if (fb->depth_image != VK_NULL_HANDLE) {
+			vk->vkDestroyImage(vk->device, fb->depth_image, NULL);
+		}
+		if (fb->depth_memory != VK_NULL_HANDLE) {
+			vk->vkFreeMemory(vk->device, fb->depth_memory, NULL);
+		}
+	}
+
+	free(r->illixr_framebuffers);
+	r->illixr_framebuffers = NULL;
+	r->illixr_framebuffer_count = 0;
+}
+
+#endif
 static void
 renderer_wait_queue_idle(struct comp_renderer *r)
 {
@@ -254,6 +496,15 @@ calc_viewport_data(struct comp_renderer *r,
 			    .h = (uint32_t)(v->viewport.h_pixels * scale_y),
 			};
 		}
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		/*
+		 * ILLIXR: Double viewport width
+		 * In v21, this was done inline:
+		 *   l_viewport_data.w *= 2;
+		 *   r_viewport_data.w *= 2;
+		 */
+		out_viewport_data[i].w *= 2;
+#endif
 	}
 }
 
@@ -548,6 +799,105 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 
 	assert(r->buffer_count != 0);
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	// ILLIXR: Initialize timewarp with custom framebuffers
+	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
+		VkExtent2D extent = {
+		    .width = r->c->target->width,
+		    .height = r->c->target->height,
+		};
+
+		// Create ILLIXR framebuffers (color + depth for both eyes)
+		if (!create_illixr_framebuffers(r, OFFLOAD_BUFFER_POOL_SIZE, extent)) {
+			COMP_ERROR(r->c, "Failed to create ILLIXR framebuffers");
+			return false;
+		}
+		COMP_INFO(r->c, "ILLIXR framebuffers created:");
+		for (uint32_t i = 0; i < r->illixr_framebuffer_count; i++) {
+			struct illixr_framebuffer *fb = &r->illixr_framebuffers[i];
+			COMP_DEBUG(r->c, "  FB[%u]: color=%p (mem=%p, size=%lu) depth=%p (mem=%p, size=%lu)",
+				   i,
+				   (void*)fb->image, (void*)fb->memory, fb->size,
+				   (void*)fb->depth_image, (void*)fb->depth_memory, fb->depth_size);
+		}
+		/*
+		 * Prepare arrays for illixr_initialize_timewarp
+		 *
+		 * Layout (interleaved by buffer, then eye):
+		 * For each buffer i (0 to OFFLOAD_BUFFER_POOL_SIZE-1):
+		 *   [i*4 + 0] = left eye color
+		 *   [i*4 + 1] = left eye depth
+		 *   [i*4 + 2] = right eye color
+		 *   [i*4 + 3] = right eye depth
+		 */
+		uint32_t total_images =
+		    OFFLOAD_BUFFER_POOL_SIZE * 4; // 4 images per buffer (L_color, L_depth, R_color, R_depth)
+
+		VkImage *images = U_TYPED_ARRAY_CALLOC(VkImage, total_images);
+		VkImageView *image_views = U_TYPED_ARRAY_CALLOC(VkImageView, total_images);
+		VkDeviceMemory *device_memory = U_TYPED_ARRAY_CALLOC(VkDeviceMemory, total_images);
+		VkDeviceSize *sizes = U_TYPED_ARRAY_CALLOC(VkDeviceSize, total_images);
+		VkDeviceSize *offsets = U_TYPED_ARRAY_CALLOC(VkDeviceSize, total_images);
+
+		for (uint32_t i = 0; i < OFFLOAD_BUFFER_POOL_SIZE; i++) {
+			// Left eye framebuffer index
+			uint32_t left_idx = i * 2;
+			// Right eye framebuffer index
+			uint32_t right_idx = i * 2 + 1;
+
+			struct illixr_framebuffer *left_fb = &r->illixr_framebuffers[left_idx];
+			struct illixr_framebuffer *right_fb = &r->illixr_framebuffers[right_idx];
+
+			// Left eye color (i*4 + 0)
+			images[i * 4 + 0] = left_fb->image;
+			image_views[i * 4 + 0] = left_fb->view;
+			device_memory[i * 4 + 0] = left_fb->memory;
+			sizes[i * 4 + 0] = left_fb->size;
+			offsets[i * 4 + 0] = left_fb->offset;
+
+			// Left eye depth (i*4 + 1)
+			images[i * 4 + 1] = left_fb->depth_image;
+			image_views[i * 4 + 1] = left_fb->depth_view;
+			device_memory[i * 4 + 1] = left_fb->depth_memory;
+			sizes[i * 4 + 1] = left_fb->depth_size;
+			offsets[i * 4 + 1] = left_fb->depth_offset;
+
+			// Right eye color (i*4 + 2)
+			images[i * 4 + 2] = right_fb->image;
+			image_views[i * 4 + 2] = right_fb->view;
+			device_memory[i * 4 + 2] = right_fb->memory;
+			sizes[i * 4 + 2] = right_fb->size;
+			offsets[i * 4 + 2] = right_fb->offset;
+
+			// Right eye depth (i*4 + 3)
+			images[i * 4 + 3] = right_fb->depth_image;
+			image_views[i * 4 + 3] = right_fb->depth_view;
+			device_memory[i * 4 + 3] = right_fb->depth_memory;
+			sizes[i * 4 + 3] = right_fb->depth_size;
+			offsets[i * 4 + 3] = right_fb->depth_offset;
+		}
+
+		COMP_DEBUG(r->c, "ILLIXR timewarp layout verification:");
+		for (uint32_t i = 0; i < OFFLOAD_BUFFER_POOL_SIZE; i++) {
+			COMP_DEBUG(r->c, "  Buffer %u:", i);
+			COMP_DEBUG(r->c, "    [%u] Left color:  %p", i*4+0, (void*)images[i*4+0]);
+			COMP_DEBUG(r->c, "    [%u] Left depth:  %p", i*4+1, (void*)images[i*4+1]);
+			COMP_DEBUG(r->c, "    [%u] Right color: %p", i*4+2, (void*)images[i*4+2]);
+			COMP_DEBUG(r->c, "    [%u] Right depth: %p", i*4+3, (void*)images[i*4+3]);
+		}
+
+		// Initialize ILLIXR timewarp
+		illixr_initialize_timewarp(r->target_render_pass.render_pass, 0, extent, images, image_views,
+		                           device_memory, sizes, offsets, OFFLOAD_BUFFER_POOL_SIZE);
+
+		// Cleanup temporary arrays
+		free(images);
+		free(image_views);
+		free(device_memory);
+		free(sizes);
+		free(offsets);
+	}
+#endif
 	return true;
 }
 
@@ -819,6 +1169,10 @@ renderer_fini(struct comp_renderer *r)
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	// ILLIXR: Destroy custom framebuffers
+	destroy_illixr_framebuffers(r);
+#endif
 	// Do before layer render just in case it holds any references.
 	comp_mirror_fini(&r->mirror_to_debug_gui, vk);
 
@@ -859,7 +1213,12 @@ dispatch_graphics(struct comp_renderer *r,
 	const struct comp_layer *layers = c->base.layer_accum.layers;
 	uint32_t layer_count = c->base.layer_accum.layer_count;
 	bool fast_path = c->base.frame_params.one_projection_layer_fast_path;
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	bool do_timewarp = illixr_offload_frames() && !c->debug.atw_off;
+#else
 	bool do_timewarp = !c->debug.atw_off;
+#endif
+
 
 	// Resources for the distortion render target.
 	struct render_gfx_target_resources *rtr = &r->rtr_array[r->acquired_buffer];
@@ -887,7 +1246,33 @@ dispatch_graphics(struct comp_renderer *r,
 	    eye_poses,              //
 	    render->r->view_count); //
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	// ILLIXR: Extract and update poses from the projection layer
+	const struct comp_layer *proj_layer = NULL;
+	for (uint32_t i = 0; i < layer_count; i++) {
+		if (layers[i].data.type == XRT_LAYER_PROJECTION || layers[i].data.type == XRT_LAYER_PROJECTION_DEPTH) {
+			proj_layer = &layers[i];
+			break;
+		}
+	}
 
+	if (proj_layer) {
+		struct xrt_pose left_pose;
+		struct xrt_pose right_pose;
+
+		if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
+			left_pose = proj_layer->data.proj.v[0].pose;
+			right_pose = proj_layer->data.proj.v[1].pose;
+		} else { // XRT_LAYER_PROJECTION_DEPTH
+			left_pose = proj_layer->data.depth.v[0].pose;
+			right_pose = proj_layer->data.depth.v[1].pose;
+		}
+
+		illixr_tw_update_uniforms(left_pose, right_pose);
+	} else {
+		COMP_WARN(c, "ILLIXR: No projection layer found for pose update");
+	}
+#endif
 	// The arguments for the dispatch function.
 	struct comp_render_dispatch_data data;
 	comp_render_gfx_initial_init( //
@@ -942,6 +1327,31 @@ dispatch_graphics(struct comp_renderer *r,
 	// Start the graphics pipeline.
 	render_gfx_begin(render);
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	/*
+	 * This replaces the v21 code that was in the per-view loops:
+	 *   illixr_tw_record_command_buffer(rr->r->cmd, rr->rtr->framebuffer, buffer_ind, 1);
+	 *   illixr_tw_record_command_buffer(rr->r->cmd, rr->rtr->framebuffer, buffer_ind, 0);
+	 */
+	if (!illixr_offload_frames()) { // TODO:
+		// ILLIXR handles timewarp, so record the command buffer
+		VkCommandBuffer cmd = render->r->cmd;
+		VkFramebuffer fb = rtr->framebuffer;
+		uint8_t buffer_ind = (uint8_t)r->acquired_buffer;
+
+		// Record for both eyes
+		// Note: In v21, you called this twice (once per eye) with different eye indices
+		// The last parameter is the eye index: 1 for left, 0 for right
+		illixr_tw_record_command_buffer(cmd, fb, buffer_ind, 1); // Left eye
+		illixr_tw_record_command_buffer(cmd, fb, buffer_ind, 0); // Right eye
+
+		// Alternative: If your function signature expects them separately,
+		// you might need to loop through views:
+		// for (uint32_t i = 0; i < render->r->view_count; i++) {
+		//     illixr_tw_record_command_buffer(cmd, fb, buffer_ind, i);
+		// }
+	}
+#endif
 	// Build the command buffer.
 	comp_render_gfx_dispatch( //
 	    render,               //

@@ -88,6 +88,9 @@
 #include "android/android_globals.h"
 #include <dlfcn.h>
 #endif
+#ifdef USE_MONADO_ILLIXR_DRIVER
+#include "../drivers/illixr/illixr_component.h"
+#endif
 
 #define WINDOW_TITLE "Monado"
 
@@ -297,6 +300,10 @@ compositor_layer_commit(struct xrt_compositor *xc, xrt_graphics_sync_handle_t sy
 	    !c->mirroring_to_debug_gui &&             //
 	    !c->debug.disable_fast_path &&            //
 	    can_do_one_projection_layer_fast_path(c); //
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	// ILLIXR: disable fast path
+	fast_path = false;
+#endif
 	c->base.frame_params.one_projection_layer_fast_path = fast_path;
 
 
@@ -382,6 +389,9 @@ compositor_destroy(struct xrt_compositor *xc)
 	struct vk_bundle *vk = get_vk(c);
 
 	COMP_DEBUG(c, "COMP_DESTROY");
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	illixr_destroy_timewarp();
+#endif
 
 	// Need to do this as early as possible.
 	u_var_remove_root(c);
@@ -720,7 +730,10 @@ compositor_init_vulkan(struct comp_compositor *c)
 	if (xret != XRT_SUCCESS) {
 		return false;
 	}
-
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	// illixr_destroy_timewarp();
+	illixr_initialize_vulkan_display_service(vk->instance, vk->physical_device, vk->device, vk->queue, vk->queue_family_index, vk_args.enabled_instance_extensions, vk_args.enabled_device_extensions);
+#endif
 	return true;
 }
 

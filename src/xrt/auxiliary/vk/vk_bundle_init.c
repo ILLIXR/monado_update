@@ -1148,7 +1148,11 @@ vk_create_device(struct vk_bundle *vk,
                  VkQueueGlobalPriorityEXT global_priority,
                  struct u_string_list *required_device_ext_list,
                  struct u_string_list *optional_device_ext_list,
-                 const struct vk_device_features *optional_device_features)
+                 const struct vk_device_features *optional_device_features
+#ifdef USE_MONADO_ILLIXR_DRIVER
+                 , struct u_string_list **out_list
+#endif
+		     )
 {
 	VkResult ret;
 
@@ -1163,7 +1167,7 @@ vk_create_device(struct vk_bundle *vk,
 		return VK_ERROR_EXTENSION_NOT_PRESENT;
 	}
 
-
+	*out_list = device_ext_list;
 	/*
 	 * Features
 	 */

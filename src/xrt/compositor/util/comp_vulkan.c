@@ -175,7 +175,12 @@ fill_in_results(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_arg
  */
 
 static VkResult
-create_instance(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
+create_instance(struct vk_bundle *vk,
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		struct comp_vulkan_arguments *vk_args)
+#else
+                const struct comp_vulkan_arguments *vk_args)
+#endif
 {
 	struct u_string_list *instance_ext_list = NULL;
 	VkResult ret;
@@ -243,8 +248,12 @@ create_instance(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_arg
 
 	// Needs to be filled in before getting functions.
 	vk_fill_in_has_instance_extensions(vk, instance_ext_list);
-
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	vk_args->enabled_instance_extensions = instance_ext_list;
+#else
 	u_string_list_destroy(&instance_ext_list);
+
+#endif
 
 	ret = vk_get_instance_functions(vk);
 	if (ret != VK_SUCCESS) {
@@ -256,7 +265,12 @@ create_instance(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_arg
 }
 
 static VkResult
-create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
+create_device(struct vk_bundle *vk,
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	      struct comp_vulkan_arguments *vk_args)
+#else
+              const struct comp_vulkan_arguments *vk_args)
+#endif
 {
 	VkResult ret;
 
@@ -297,7 +311,11 @@ create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
 		    prios[i],                            // global_priority
 		    vk_args->required_device_extensions, //
 		    vk_args->optional_device_extensions, //
-		    &device_features);                   // optional_device_features
+		    &device_features
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		    ,&vk_args->enabled_device_extensions // optional_device_features
+#endif
+                );
 
 		// All ok!
 		if (ret == VK_SUCCESS) {
@@ -343,7 +361,11 @@ create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
 
 bool
 comp_vulkan_init_bundle(struct vk_bundle *vk,
-                        const struct comp_vulkan_arguments *vk_args,
+#ifdef USE_MONADO_ILLIXR_DRIVER
+			struct comp_vulkan_arguments *vk_args,
+#else
+			const struct comp_vulkan_arguments *vk_args,
+#endif
                         struct comp_vulkan_results *vk_res)
 {
 	VkResult ret;

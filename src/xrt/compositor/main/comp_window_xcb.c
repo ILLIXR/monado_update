@@ -257,7 +257,11 @@ comp_window_xcb_init(struct comp_target *ct)
 
 	comp_window_xcb_connect_delete_event(w_xcb);
 
-	if (ct->c->settings.fullscreen) {
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (getenv("ILLIXR_SET_FULLSCREEN") != NULL && atoi(getenv("ILLIXR_SET_FULLSCREEN")) > 0) {
+#else
+        if (ct->c->settings.fullscreen) {
+#endif
 		comp_window_xcb_set_full_screen(w_xcb);
 	}
 
