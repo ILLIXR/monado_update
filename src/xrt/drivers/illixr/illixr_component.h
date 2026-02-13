@@ -124,6 +124,12 @@ void illixr_tw_update_uniforms(struct xrt_pose l_pose, struct xrt_pose r_pose);
 void illixr_tw_record_command_buffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, int buffer_ind, int left);
 void illixr_publish_vsync_estimate(uint64_t display_time_ns);
 
+typedef void (*illixr_hand_tracking_fn)(struct xrt_device *xdev,
+                                        enum xrt_input_name name,
+                                        int64_t desired_timestamp_ns,
+                                        struct xrt_hand_joint_set *out_value,
+                                        int64_t *out_timestamp_ns);
+illixr_hand_tracking_fn illixr_get_hand_tracking_callback(void);
 #ifdef __cplusplus
 }
 #endif

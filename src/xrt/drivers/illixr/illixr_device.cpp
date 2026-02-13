@@ -242,13 +242,19 @@ convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand
 /**
  * @brief Get hand tracking data from ILLIXR
  */
-static void
+/*
+extern "C" static void
 illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
                              enum xrt_input_name name,
                              int64_t desired_timestamp_ns,
                              struct xrt_hand_joint_set *out_value,
                              int64_t *out_timestamp_ns)
 {
+	fprintf(stderr, "[ILLIXR] hand call - ENTERED\n");
+	fflush(stderr);
+//	out_value->is_active = false;
+//	*out_timestamp_ns = 0;
+//} 
 	(void)desired_timestamp_ns;
 	struct illixr_hmd *dh = illixr_hmd(xdev);
 
@@ -287,6 +293,18 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 		return;
 	}
 
+	// Verify ILLIXR plugin is actually initialized and ready
+	// This prevents crashes if Unity calls hand tracking before ILLIXR is ready
+	if (!illixr_hand_tracking_supported()) {
+		if (call_count <= 5 || call_count % 100 == 0) {
+			printf("[ILLIXR] ILLIXR plugin not ready for hand tracking yet (call #%llu)\n",
+			       (unsigned long long)call_count);
+		}
+		out_value->is_active = false;
+		return;
+	}
+
+	// Get hand data from ILLIXR (NOW SAFE - plugin is verified ready)
 	// Get hand data from ILLIXR
 	struct illixr_single_hand hand_data;
 	if (!illixr_read_single_hand(hand_index, &hand_data)) {
@@ -322,7 +340,7 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 		       hand_data.joints[1].position.y,
 		       hand_data.joints[1].position.z);
 	}
-}
+}*/
 
 
 static void
@@ -399,7 +417,8 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	dh->base.update_inputs = illixr_hmd_update_inputs;
 	dh->base.get_tracked_pose = illixr_hmd_get_tracked_pose;
 	dh->base.get_view_poses = illixr_hmd_get_view_poses;
-	dh->base.get_hand_tracking = illixr_hmd_get_hand_tracking;
+	dh->base.get_hand_tracking = (void (*)(struct xrt_device *, enum xrt_input_name, int64_t, struct xrt_hand_joint_set *,
+	              int64_t *))illixr_get_hand_tracking_callback();
 	dh->base.destroy = illixr_hmd_destroy;
 	dh->base.name = XRT_DEVICE_GENERIC_HMD;
 	dh->base.device_type = XRT_DEVICE_TYPE_HMD;
@@ -487,12 +506,12 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		return NULL;
 	}
 
-	// Check environment variables directly for hand tracking support
-	// We can't rely on illixr_hand_tracking_supported() here because the plugin
-	// may not be fully initialized yet (load_plugin_factory registers but may not call)
+	// DON'T wait here - Vulkan isn't initialized yet!
+	// Instead, hand tracking will be checked at runtime in the callback
+
+	// Check environment variables for INTENT to use hand tracking
 	bool ht_enabled = false;
 
-	// Check ILLIXR_USE_HAND_TRACKING first
 	const char* ht_env = std::getenv("ILLIXR_USE_HAND_TRACKING");
 	if (ht_env != nullptr) {
 		std::string val(ht_env);
