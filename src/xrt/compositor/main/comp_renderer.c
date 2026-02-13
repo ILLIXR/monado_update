@@ -113,6 +113,7 @@ struct illixr_framebuffer
 	VkDeviceSize depth_offset;
 
 	VkExtent2D extent;
+	VkFramebuffer framebuffer;
 };
 #endif
 
@@ -275,8 +276,17 @@ create_illixr_framebuffers(struct comp_renderer *r, uint32_t num_buffers_per_eye
 		fb->extent = extent;
 
 		// ===== COLOR IMAGE =====
+
+		// ILLIXR/NVENC: Enable external memory export
+		VkExternalMemoryImageCreateInfo external_image_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+		    .pNext = NULL,
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+		};
+
 		VkImageCreateInfo image_info = {
 		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .pNext = &external_image_info,
 		    .imageType = VK_IMAGE_TYPE_2D,
 		    .format = VK_FORMAT_B8G8R8A8_UNORM, // Match ILLIXR expectation
 		    .extent =
@@ -305,8 +315,16 @@ create_illixr_framebuffers(struct comp_renderer *r, uint32_t num_buffers_per_eye
 		VkMemoryRequirements mem_reqs;
 		vk->vkGetImageMemoryRequirements(vk->device, fb->image, &mem_reqs);
 
+		// ILLIXR/NVENC: Export memory for external access
+		VkExportMemoryAllocateInfo export_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+		    .pNext = NULL,
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+		};
+
 		VkMemoryAllocateInfo alloc_info = {
 		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .pNext = &export_info,
 		    .allocationSize = mem_reqs.size,
 		    .memoryTypeIndex =
 		        find_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
@@ -357,6 +375,13 @@ create_illixr_framebuffers(struct comp_renderer *r, uint32_t num_buffers_per_eye
 		}
 
 		// ===== DEPTH IMAGE =====
+		// ILLIXR/NVENC: Enable external memory export for depth
+		VkExternalMemoryImageCreateInfo depth_external_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+		    .pNext = NULL,
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+		};
+		image_info.pNext = &depth_external_info;
 		image_info.format = VK_FORMAT_D32_SFLOAT; // Or VK_FORMAT_D24_UNORM_S8_UINT
 		image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
@@ -369,6 +394,14 @@ create_illixr_framebuffers(struct comp_renderer *r, uint32_t num_buffers_per_eye
 		// Allocate depth memory
 		vk->vkGetImageMemoryRequirements(vk->device, fb->depth_image, &mem_reqs);
 
+		// ILLIXR/NVENC: Export memory for depth
+		VkExportMemoryAllocateInfo depth_export_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+		    .pNext = NULL,
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+		};
+
+		alloc_info.pNext = &depth_export_info;
 		alloc_info.allocationSize = mem_reqs.size;
 		alloc_info.memoryTypeIndex =
 		    find_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -396,6 +429,25 @@ create_illixr_framebuffers(struct comp_renderer *r, uint32_t num_buffers_per_eye
 		ret = vk->vkCreateImageView(vk->device, &view_info, NULL, &fb->depth_view);
 		if (ret != VK_SUCCESS) {
 			COMP_ERROR(r->c, "Failed to create ILLIXR depth view %u: %s", i, vk_result_string(ret));
+			return false;
+		}
+
+		// Create framebuffer
+		VkImageView attachments[] = {fb->view, fb->depth_view};
+
+		VkFramebufferCreateInfo fb_info = {
+		    .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+		    .renderPass = r->target_render_pass.render_pass, // Use the shared render pass
+		    .attachmentCount = 2,                            // Color + depth
+		    .pAttachments = attachments,
+		    .width = extent.width,
+		    .height = extent.height,
+		    .layers = 1,
+		};
+
+		ret = vk->vkCreateFramebuffer(vk->device, &fb_info, NULL, &fb->framebuffer);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(r->c, "Failed to create ILLIXR framebuffer %d: %s", i, vk_result_string(ret));
 			return false;
 		}
 
@@ -439,6 +491,9 @@ destroy_illixr_framebuffers(struct comp_renderer *r)
 		}
 		if (fb->depth_memory != VK_NULL_HANDLE) {
 			vk->vkFreeMemory(vk->device, fb->depth_memory, NULL);
+		}
+		if (r->illixr_framebuffers[i].framebuffer != VK_NULL_HANDLE) {
+			vk->vkDestroyFramebuffer(vk->device, r->illixr_framebuffers[i].framebuffer, NULL);
 		}
 	}
 
@@ -803,8 +858,8 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 	// ILLIXR: Initialize timewarp with custom framebuffers
 	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
 		VkExtent2D extent = {
-		    .width = r->c->target->width,
-		    .height = r->c->target->height,
+		    .width = r->c->xdev->hmd->screens[0].w_pixels,
+		    .height = r->c->xdev->hmd->screens[0].h_pixels,
 		};
 
 		// Create ILLIXR framebuffers (color + depth for both eyes)
@@ -1209,6 +1264,9 @@ dispatch_graphics(struct comp_renderer *r,
 	struct vk_bundle *vk = &c->base.vk;
 	VkResult ret;
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	int8_t illixr_buffer_index = -1;
+#endif
 	// Basics
 	const struct comp_layer *layers = c->base.layer_accum.layers;
 	uint32_t layer_count = c->base.layer_accum.layer_count;
@@ -1327,31 +1385,6 @@ dispatch_graphics(struct comp_renderer *r,
 	// Start the graphics pipeline.
 	render_gfx_begin(render);
 
-#ifdef USE_MONADO_ILLIXR_DRIVER
-	/*
-	 * This replaces the v21 code that was in the per-view loops:
-	 *   illixr_tw_record_command_buffer(rr->r->cmd, rr->rtr->framebuffer, buffer_ind, 1);
-	 *   illixr_tw_record_command_buffer(rr->r->cmd, rr->rtr->framebuffer, buffer_ind, 0);
-	 */
-	if (!illixr_offload_frames()) { // TODO:
-		// ILLIXR handles timewarp, so record the command buffer
-		VkCommandBuffer cmd = render->r->cmd;
-		VkFramebuffer fb = rtr->framebuffer;
-		uint8_t buffer_ind = (uint8_t)r->acquired_buffer;
-
-		// Record for both eyes
-		// Note: In v21, you called this twice (once per eye) with different eye indices
-		// The last parameter is the eye index: 1 for left, 0 for right
-		illixr_tw_record_command_buffer(cmd, fb, buffer_ind, 1); // Left eye
-		illixr_tw_record_command_buffer(cmd, fb, buffer_ind, 0); // Right eye
-
-		// Alternative: If your function signature expects them separately,
-		// you might need to loop through views:
-		// for (uint32_t i = 0; i < render->r->view_count; i++) {
-		//     illixr_tw_record_command_buffer(cmd, fb, buffer_ind, i);
-		// }
-	}
-#endif
 	// Build the command buffer.
 	comp_render_gfx_dispatch( //
 	    render,               //
@@ -1359,6 +1392,120 @@ dispatch_graphics(struct comp_renderer *r,
 	    layer_count,          //
 	    &data);               //
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	/*
+	 * NOW apply timewarp to ILLIXR framebuffers AFTER scene is rendered
+	 */
+	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && !illixr_offload_frames()) {
+		COMP_INFO(c, "ILLIXR: Acquiring buffer for timewarp");
+
+		// Acquire buffer from ILLIXR's buffer pool
+		illixr_buffer_index = illixr_src_acquire();
+
+		if (illixr_buffer_index < 0) {
+			COMP_ERROR(c, "ILLIXR: Failed to acquire buffer, index: %d", illixr_buffer_index);
+		} else {
+			COMP_INFO(c, "ILLIXR: Acquired buffer index: %d", illixr_buffer_index);
+
+			VkCommandBuffer cmd = render->r->cmd;
+
+			// CRITICAL: Copy scratch images to buffer pool images
+			// Buffer pool layout: [left_color, left_depth, right_color, right_depth] × num_buffers
+			for (uint32_t eye = 0; eye < 2; eye++) {
+				uint32_t scratch_index = crss->views[eye].index;
+				struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
+				struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
+
+				// Buffer pool color image for this eye
+				int buffer_pool_color_idx = illixr_buffer_index * 4 + eye * 2;
+				VkImage dst_color = buffer_pool_->images[buffer_pool_color_idx].image;
+
+				COMP_INFO(c, "ILLIXR: Copying eye %d scratch to buffer pool[%d]", eye,
+				          buffer_pool_color_idx);
+
+				// Transition scratch image for transfer
+				VkImageMemoryBarrier barrier = {
+				    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				    .image = scratch_image->image,
+				    .subresourceRange =
+				        {
+				            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				            .baseMipLevel = 0,
+				            .levelCount = 1,
+				            .baseArrayLayer = 0,
+				            .layerCount = 1,
+				        },
+				};
+				vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+				                         &barrier);
+
+				// Transition buffer pool image for transfer
+				barrier.srcAccessMask = 0;
+				barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.image = dst_color;
+				vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+				                         &barrier);
+
+				// Copy image
+				VkImageCopy copy_region = {
+				    .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1},
+				    .dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1},
+				    .extent = {.width = scratch_view->info.width,
+				               .height = scratch_view->info.height,
+				               .depth = 1},
+				};
+				vk->vkCmdCopyImage(cmd, scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				                   dst_color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+				// Transition buffer pool image to shader read for timewarp
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				barrier.image = dst_color;
+				vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+				                         &barrier);
+			}
+
+			// NOW timewarp can read from buffer pool images
+			VkFramebuffer left_fb = r->illixr_framebuffers[illixr_buffer_index * 2].framebuffer;
+			VkFramebuffer right_fb = r->illixr_framebuffers[illixr_buffer_index * 2 + 1].framebuffer;
+
+			illixr_tw_record_command_buffer(cmd, left_fb, illixr_buffer_index, 1);
+			illixr_tw_record_command_buffer(cmd, right_fb, illixr_buffer_index, 0);
+
+			// Extract poses for release
+			struct xrt_pose left_pose = {.orientation = {.x = 0, .y = 0, .z = 0, .w = 1}};
+			struct xrt_pose right_pose = {.orientation = {.x = 0, .y = 0, .z = 0, .w = 1}};
+
+			if (proj_layer) {
+				if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
+					left_pose = proj_layer->data.proj.v[0].pose;
+					right_pose = proj_layer->data.proj.v[1].pose;
+				} else {
+					left_pose = proj_layer->data.depth.v[0].pose;
+					right_pose = proj_layer->data.depth.v[1].pose;
+				}
+			}
+
+			COMP_INFO(c, "ILLIXR: Releasing buffer %d", illixr_buffer_index);
+
+			// Release buffer back to ILLIXR for encoding
+			illixr_src_release(illixr_buffer_index, left_pose, right_pose);
+
+			COMP_INFO(c, "ILLIXR: Buffer released successfully");
+		}
+	}
+#endif
 	// Make the command buffer submittable.
 	render_gfx_end(render);
 
