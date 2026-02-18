@@ -15,6 +15,7 @@
 
 #include "xrt/xrt_device.h"
 #include "util/u_string_list.h"
+#include "main/comp_renderer.h"
 
 #include <memory>
 #include <vulkan/vulkan.h>
@@ -335,59 +336,27 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
                            VkDeviceMemory *device_memory,
                            VkDeviceSize *size,
                            VkDeviceSize *offset,
-                           uint32_t num_buffers_per_eye)
+                           uint32_t num_buffers_per_eye,
+                           struct illixr_framebuffer *framebuffer_array)
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-	std::cout << PREFIX << "Initializing timewarp" << std::endl;
-	// Num buffers per eye should be twice as large if we're passing in depth.
-	// std::vector<VkImageView> left_eye_views(buffer_pool, buffer_pool + num_buffers_per_eye);
-	// std::vector<VkImageView> right_eye_views(buffer_pool + num_buffers_per_eye, buffer_pool + 2 *
-	// num_buffers_per_eye); std::array<std::vector<VkImageView>, 2> eye_views = {left_eye_views, right_eye_views};
-	// // for (int eye = 0; eye < 2; eye++) {
-	// // 	for (int buffer = 0; buffer < num_buffers_per_eye; buffer++) {
-	// // 		assert(eye_views[eye][buffer] != VK_NULL_HANDLE && "Eye buffer image view is a null handle!");
-	// // 	}
-	// // }
-	// illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, std::move(eye_views), false);
 
-	// Depth images are interleaved with the color images, e.g.
-	// left image 0, left depth 0, right image 0, right depth 0
-	std::vector<std::array<vulkan::vk_image, 2>> image_pool;
-	for (auto i = 0; i < num_buffers_per_eye; i++) {
-		std::array<vulkan::vk_image, 2> image_arr;
-		for (auto eye = 0; eye < 2; eye++) {
-			image_arr[eye].image = image[i * 4 + eye * 2];
-			image_arr[eye].image_view = image_view[i * 4 + eye * 2];
-			image_arr[eye].allocation_info.size = size[i * 4 + eye * 2];
-			image_arr[eye].allocation_info.offset = offset[i * 4 + eye * 2];
-			image_arr[eye].allocation_info.deviceMemory = device_memory[i * 4 + eye * 2];
-			image_arr[eye].image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-			image_arr[eye].image_info.format = VK_FORMAT_B8G8R8A8_UNORM;
-			image_arr[eye].image_info.extent = {extent.width, extent.height, 1};
-		}
-		image_pool.push_back(image_arr);
-	}
-
-	std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool;
-	for (auto i = 0; i < num_buffers_per_eye; i++) {
-		std::array<vulkan::vk_image, 2> image_arr;
-		for (auto eye = 0; eye < 2; eye++) {
-			image_arr[eye].image = image[i * 4 + eye * 2 + 1];
-			image_arr[eye].image_view = image_view[i * 4 + eye * 2 + 1];
-			image_arr[eye].allocation_info.size = size[i * 4 + eye * 2 + 1];
-			image_arr[eye].allocation_info.offset = offset[i * 4 + eye * 2 + 1];
-			image_arr[eye].allocation_info.deviceMemory = device_memory[i * 4 + eye * 2 + 1];
-			image_arr[eye].image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-			image_arr[eye].image_info.format = VK_FORMAT_B8G8R8A8_UNORM;
-			image_arr[eye].image_info.extent = {extent.width, extent.height, 1};
-		}
-		depth_image_pool.push_back(image_arr);
-	}
+	// Create empty buffer pool - images will be imported later
+	std::vector<std::array<vulkan::vk_image, 2>> image_pool(num_buffers_per_eye);
+	std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool(num_buffers_per_eye);
 
 	auto buffer_pool = std::make_shared<vulkan::buffer_pool<fast_pose_type>>(image_pool, depth_image_pool);
 	illixr_plugin_obj->buffer_pool = buffer_pool;
-	illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, std::move(buffer_pool), true);
-	std::cout << PREFIX << "Initialized timewarp" << std::endl;
+
+	// Pass EVERYTHING through setup() - the only communication channel to the plugin
+	illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, buffer_pool, true,
+	                                      framebuffer_array, // Plugin stores this pointer
+	                                      extent             // Plugin uses this for encoder dimensions
+	);
+
+	fprintf(stderr, "[ILLIXR] Timewarp setup complete - extent=%ux%u, fb_array=%p\n", extent.width, extent.height,
+	        (void *)framebuffer_array);	
+	//log_debug("Initialized timewarp");
 }
 
 extern "C" int8_t
@@ -401,6 +370,7 @@ extern "C" void
 illixr_src_release(int8_t buffer_ind, struct xrt_pose l_pose, struct xrt_pose r_pose)
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
+
 	pose_type pose{time_point{},
 	               Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2,
 	                               (l_pose.position.y + r_pose.position.y) / 2,
