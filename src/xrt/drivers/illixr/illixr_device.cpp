@@ -54,6 +54,50 @@
  *
  */
 
+// Debug file logger - static global
+/*
+static FILE *g_debug_log = NULL;
+
+static void
+init_debug_log(void)
+{
+	if (g_debug_log == NULL) {
+		g_debug_log = fopen("D:\\illixr_device_debug.log", "w");
+		if (g_debug_log) {
+			fprintf(g_debug_log, "=== Hand Tracking Debug Log Started ===\n");
+			fflush(g_debug_log);
+		}
+	}
+}
+
+static void
+ht_log(const char *format, ...)
+{
+	if (g_debug_log == NULL) {
+		init_debug_log();
+	}
+
+	if (g_debug_log) {
+		// Get timestamp
+		time_t now = time(NULL);
+		struct tm *tm_info = localtime(&now);
+		char time_buf[64];
+		strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
+
+		// Write timestamp
+		fprintf(g_debug_log, "[%s] ", time_buf);
+
+		// Write actual message
+		va_list args;
+		va_start(args, format);
+		vfprintf(g_debug_log, format, args);
+		va_end(args);
+
+		fprintf(g_debug_log, "\n");
+		fflush(g_debug_log); // CRITICAL - force write immediately
+	}
+}*/
+
 struct illixr_hmd
 {
 	struct xrt_device base;
@@ -195,31 +239,37 @@ convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand
 	// Radius
 	dst->radius = src->radius;
 
-	// Build relation flags from OpenXR-style location_flags
+	// Build relation flags from ILLIXR location_flags bit convention
+	// (defined in hand_tracking_data.hpp::hand_joint_pose):
+	//   Bit 0: Position valid
+	//   Bit 1: Orientation valid
+	//   Bit 2: Linear velocity valid
+	//   Bit 3: Angular velocity valid
+	//   Bit 4: Position tracked (not just estimated)
+	//   Bit 5: Orientation tracked (not just estimated)
 	enum xrt_space_relation_flags flags = (enum xrt_space_relation_flags)0;
 
-	// OpenXR flag mapping (from XrSpaceLocationFlags)
-	if (src->location_flags & 0x01) { // XR_SPACE_LOCATION_ORIENTATION_VALID_BIT
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT);
-	}
-	if (src->location_flags & 0x02) { // XR_SPACE_LOCATION_POSITION_VALID_BIT
+	if (src->location_flags & 0x01) { // Position valid
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_VALID_BIT);
 	}
-	if (src->location_flags & 0x04) { // XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
+	if (src->location_flags & 0x02) { // Orientation valid
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT);
 	}
-	if (src->location_flags & 0x08) { // XR_SPACE_LOCATION_POSITION_TRACKED_BIT
+	if (src->location_flags & 0x10) { // Position tracked
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
 	}
-
-	// If no flags set but we have data, assume valid and tracked
-	if (flags == 0) {
-		flags = (enum xrt_space_relation_flags)(
-		    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_POSITION_VALID_BIT |
-		    XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+	if (src->location_flags & 0x20) { // Orientation tracked
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
 	}
 
-	// Velocities (if provided)
+	// If no pose flags were set but we have data, assume valid and tracked
+	if (flags == 0) {
+		flags = (enum xrt_space_relation_flags)(
+		    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
+		    XRT_SPACE_RELATION_POSITION_TRACKED_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
+	}
+
+	// Velocities
 	dst->relation.linear_velocity.x = src->linear_velocity.x;
 	dst->relation.linear_velocity.y = src->linear_velocity.y;
 	dst->relation.linear_velocity.z = src->linear_velocity.z;
@@ -228,11 +278,11 @@ convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand
 	dst->relation.angular_velocity.y = src->angular_velocity.y;
 	dst->relation.angular_velocity.z = src->angular_velocity.z;
 
-	// Check if velocities are non-zero, add flags
-	if (src->linear_velocity.x != 0 || src->linear_velocity.y != 0 || src->linear_velocity.z != 0) {
+	// Set velocity validity flags from location_flags bits 2 and 3
+	if (src->location_flags & 0x04) { // Linear velocity valid
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT);
 	}
-	if (src->angular_velocity.x != 0 || src->angular_velocity.y != 0 || src->angular_velocity.z != 0) {
+	if (src->location_flags & 0x08) { // Angular velocity valid
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
 	}
 
@@ -240,108 +290,73 @@ convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand
 }
 
 /**
- * @brief Get hand tracking data from ILLIXR
+ * @brief Get hand tracking data from ILLIXR and populate an xrt_hand_joint_set.
+ *
+ * Converts all 26 joint poses (position, orientation, radius, linear velocity,
+ * angular velocity) and their validity flags from the ILLIXR representation
+ * into Monado's xrt_hand_joint_set.  The OpenXR runtime then exposes this data
+ * to applications via XR_EXT_hand_tracking.
  */
-/*
-extern "C" static void
+static void
 illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
                              enum xrt_input_name name,
                              int64_t desired_timestamp_ns,
                              struct xrt_hand_joint_set *out_value,
                              int64_t *out_timestamp_ns)
 {
-	fprintf(stderr, "[ILLIXR] hand call - ENTERED\n");
-	fflush(stderr);
-//	out_value->is_active = false;
-//	*out_timestamp_ns = 0;
-//} 
+	(void)xdev;
 	(void)desired_timestamp_ns;
-	struct illixr_hmd *dh = illixr_hmd(xdev);
 
-	// Debug: log that we're being called
-	static uint64_t call_count = 0;
-	call_count++;
+	//ht_log("Hand tracking called for input %d", name);
+
+	// Check if hand tracking is supported
+	if (!illixr_hand_tracking_supported()) {
+		//ht_log("Hand tracking not supported");
+		out_value->is_active = false;
+		return;
+	}
 
 	// Determine which hand
 	int hand_index = -1;
-	const char *hand_name = "unknown";
-
 	if (name == XRT_INPUT_GENERIC_HAND_TRACKING_LEFT) {
 		hand_index = 0;
-		hand_name = "left";
 	} else if (name == XRT_INPUT_GENERIC_HAND_TRACKING_RIGHT) {
 		hand_index = 1;
-		hand_name = "right";
 	} else {
-		DH_ERROR(dh, "unknown input name for hand tracking: %d", name);
+		//ht_log("Unknown hand tracking input name: %d", name);
 		out_value->is_active = false;
 		return;
 	}
 
-
-	// Log first few calls and then periodically
-	if (call_count <= 5 || call_count % 300 == 0) {
-		printf("[ILLIXR] get_hand_tracking called for %s hand (call #%llu)\n",
-		       hand_name, (unsigned long long)call_count);
-	}
-	// Check if hand tracking is supported
-	if (!dh->hand_tracking_supported) {
-		if (call_count <= 5) {
-			printf("[ILLIXR] Hand tracking not supported on device\n");
-		}
-		out_value->is_active = false;
-		return;
-	}
-
-	// Verify ILLIXR plugin is actually initialized and ready
-	// This prevents crashes if Unity calls hand tracking before ILLIXR is ready
-	if (!illixr_hand_tracking_supported()) {
-		if (call_count <= 5 || call_count % 100 == 0) {
-			printf("[ILLIXR] ILLIXR plugin not ready for hand tracking yet (call #%llu)\n",
-			       (unsigned long long)call_count);
-		}
-		out_value->is_active = false;
-		return;
-	}
-
-	// Get hand data from ILLIXR (NOW SAFE - plugin is verified ready)
-	// Get hand data from ILLIXR
+	// Fetch hand data from ILLIXR switchboard
 	struct illixr_single_hand hand_data;
 	if (!illixr_read_single_hand(hand_index, &hand_data)) {
-		if (call_count <= 5 || call_count % 300 == 0) {
-			printf("[ILLIXR] No hand data available for %s hand\n", hand_name);
-		}
+		//ht_log("illixr_read_single_hand returned false for hand %d", hand_index);
 		out_value->is_active = false;
 		return;
 	}
 
 	// Set active state
 	out_value->is_active = hand_data.is_active;
+
 	if (!hand_data.is_active) {
-		if (call_count <= 5 || call_count % 300 == 0) {
-			printf("[ILLIXR] %s hand not active\n", hand_name);
-		}
+		//ht_log("Hand %d not active", hand_index);
 		return;
 	}
 
-	// Convert all joints
+	// Convert all joints: position, orientation, radius, linear velocity,
+	// angular velocity, and validity flags
 	for (int i = 0; i < XRT_HAND_JOINT_COUNT && i < ILLIXR_HAND_JOINT_COUNT; i++) {
-		convert_illixr_joint_to_xrt(&hand_data.joints[i], &out_value->values.hand_joint_set_default[i]);
+		convert_illixr_joint_to_xrt(&hand_data.joints[i],
+		                            &out_value->values.hand_joint_set_default[i]);
 	}
+	// Return current time
+	*out_timestamp_ns = (int64_t)get_timestamp_ns();
 
-	// Return the current timestamp using portable helper
-	*out_timestamp_ns = get_timestamp_ns();
-
-	// Log success periodically
-	if (call_count <= 5 || call_count % 300 == 0) {
-		printf("[ILLIXR] %s hand: ACTIVE, confidence=%.2f, wrist=(%.3f, %.3f, %.3f)\n",
-		       hand_name, hand_data.confidence,
-		       hand_data.joints[1].position.x,
-		       hand_data.joints[1].position.y,
-		       hand_data.joints[1].position.z);
-	}
-}*/
-
+	//ht_log("Hand %d tracking data returned: wrist=(%.4f, %.4f, %.4f) flags=0x%x", hand_index,
+	//       hand_data.joints[1].position.x, hand_data.joints[1].position.y, hand_data.joints[1].position.z,
+	//       hand_data.joints[1].location_flags);
+}
 
 static void
 illixr_hmd_get_view_poses(struct xrt_device *xdev,
@@ -417,8 +432,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	dh->base.update_inputs = illixr_hmd_update_inputs;
 	dh->base.get_tracked_pose = illixr_hmd_get_tracked_pose;
 	dh->base.get_view_poses = illixr_hmd_get_view_poses;
-	dh->base.get_hand_tracking = (void (*)(struct xrt_device *, enum xrt_input_name, int64_t, struct xrt_hand_joint_set *,
-	              int64_t *))illixr_get_hand_tracking_callback();
+	dh->base.get_hand_tracking = illixr_hmd_get_hand_tracking;
 	dh->base.destroy = illixr_hmd_destroy;
 	dh->base.name = XRT_DEVICE_GENERIC_HMD;
 	dh->base.device_type = XRT_DEVICE_TYPE_HMD;
@@ -539,7 +553,12 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	       (void*)dh->base.get_hand_tracking);
 	printf("[ILLIXR]   hand_tracking_supported flag: %d\n",
 	       dh->base.hand_tracking_supported);
+	printf("[ILLIXR]   get_tracked_poses:  %p\n", (void *)dh->base.get_tracked_pose);
+	printf("[ILLIXR]   update_inputs:  %p\n", (void *)dh->base.update_inputs);
+	printf("[ILLIXR]   destroy:  %p\n", (void *)dh->base.destroy);
 	printf("[ILLIXR] ==========================================\n");
-
+	printf("[ILLIXR] Returning device at address: %p\n", (void *)&dh->base);
+	printf("[ILLIXR] Callback at this device: %p\n", (void *)dh->base.get_hand_tracking);
+	
 	return &dh->base;
 }
