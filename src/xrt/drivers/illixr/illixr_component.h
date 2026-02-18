@@ -40,30 +40,30 @@ extern "C" {
  * Contains position, orientation, radius, and tracking validity.
  */
 struct illixr_hand_joint {
-	struct xrt_vec3 position;       //!< 3D position in meters
-	struct xrt_quat orientation;    //!< Rotation quaternion
-	float radius;                   //!< Joint radius in meters
-	struct xrt_vec3 linear_velocity;  //!< Linear velocity m/s
-	struct xrt_vec3 angular_velocity; //!< Angular velocity rad/s
-	uint32_t location_flags;         //!< Tracking validity flags
+        struct xrt_vec3 position;       //!< 3D position in meters
+        struct xrt_quat orientation;    //!< Rotation quaternion
+        float radius;                   //!< Joint radius in meters
+        struct xrt_vec3 linear_velocity;  //!< Linear velocity m/s
+        struct xrt_vec3 angular_velocity; //!< Angular velocity rad/s
+        uint32_t location_flags;         //!< Tracking validity flags
 };
 
 /**
  * @brief Hand tracking data for a single hand
  */
 struct illixr_single_hand {
-	struct illixr_hand_joint joints[ILLIXR_HAND_JOINT_COUNT]; //!< All 26 joints
-	bool is_active;     //!< Whether hand is currently tracked
-	float confidence;   //!< Tracking confidence 0.0-1.0
+        struct illixr_hand_joint joints[ILLIXR_HAND_JOINT_COUNT]; //!< All 26 joints
+        bool is_active;     //!< Whether hand is currently tracked
+        float confidence;   //!< Tracking confidence 0.0-1.0
 };
 
 /**
  * @brief Hand tracking data for both hands
  */
 struct illixr_hand_tracking_data {
-	struct illixr_single_hand left_hand;   //!< Left hand data
-	struct illixr_single_hand right_hand;  //!< Right hand data
-	bool valid;                            //!< Whether data is valid
+        struct illixr_single_hand left_hand;   //!< Left hand data
+        struct illixr_single_hand right_hand;  //!< Right hand data
+        bool valid;                            //!< Whether data is valid
 };
 
 /*
@@ -142,12 +142,8 @@ void illixr_tw_update_uniforms(struct xrt_pose l_pose, struct xrt_pose r_pose);
 void illixr_tw_record_command_buffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, int buffer_ind, int left);
 void illixr_publish_vsync_estimate(uint64_t display_time_ns);
 
-typedef void (*illixr_hand_tracking_fn)(struct xrt_device *xdev,
-                                        enum xrt_input_name name,
-                                        int64_t desired_timestamp_ns,
-                                        struct xrt_hand_joint_set *out_value,
-                                        int64_t *out_timestamp_ns);
-illixr_hand_tracking_fn illixr_get_hand_tracking_callback(void);
+VkExtent2D illixr_get_extent(void);
+
 #ifdef __cplusplus
 }
 #endif

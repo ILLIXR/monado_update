@@ -44,6 +44,51 @@
 #include <queue>
 #include <string>
 
+// Debug file logger - static global
+/*
+static FILE *g_debug_log3 = NULL;
+
+static void
+init_debug_log(void)
+{
+	if (g_debug_log3 == NULL) {
+		g_debug_log3 = fopen("D:\\illixr_comp_debug.log", "w");
+		if (g_debug_log3) {
+			fprintf(g_debug_log3, "=== Hand Tracking Debug Log Started ===\n");
+			fflush(g_debug_log3);
+		}
+	}
+}
+
+static void
+log_debug(const char *format, ...)
+{
+	if (g_debug_log3 == NULL) {
+		init_debug_log();
+	}
+
+	if (g_debug_log3) {
+		// Get timestamp
+		time_t now = time(NULL);
+		struct tm *tm_info = localtime(&now);
+		char time_buf[64];
+		strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
+
+		// Write timestamp
+		fprintf(g_debug_log3, "[%s] ", time_buf);
+
+		// Write actual message
+		va_list args;
+		va_start(args, format);
+		vfprintf(g_debug_log3, format, args);
+		va_end(args);
+
+		fprintf(g_debug_log3, "\n");
+		fflush(g_debug_log3); // CRITICAL - force write immediately
+	}
+}
+*/
+
 using namespace ILLIXR;
 using namespace ILLIXR::vulkan;
 using namespace ILLIXR::data_format;
@@ -60,7 +105,7 @@ class monado_compositor_app : public app
 
 static std::atomic<bool> _ds_ready = false;
 
-/// Simulated plugin class for an instance during phonebook registration
+// Simulated plugin class for an instance during phonebook registration
 class illixr_plugin : public plugin
 {
 public:
@@ -90,8 +135,7 @@ public:
 			hand_tracking_enabled_ = offload_frames;
 		}
 
-		std::cout << PREFIX << "Hand tracking " << (hand_tracking_enabled_ ? "enabled" : "disabled")
-		          << std::endl;
+		//log_debug("Hand tracking %s", (hand_tracking_enabled_ ? "enabled" : "disabled"));
 	}
 
 	std::atomic<bool> ready = false;
@@ -138,10 +182,9 @@ extern "C" struct xrt_pose
 illixr_read_pose()
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-
-	if (!illixr_plugin_obj->sb_pose->fast_pose_reliable()) {
-		std::cerr << "Pose not reliable yet; returning best guess" << std::endl;
-	}
+	//if (!illixr_plugin_obj->sb_pose->fast_pose_reliable()) {
+	//	log_debug("Pose not reliable yet; returning best guess");
+	//}
 	struct xrt_pose ret;
 	const fast_pose_type fast_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
 	const pose_type curr_pose = fast_pose.pose;
@@ -152,7 +195,6 @@ illixr_read_pose()
 	ret.position.x = curr_pose.position.x();
 	ret.position.y = curr_pose.position.y();
 	ret.position.z = curr_pose.position.z();
-
 	return ret;
 }
 
@@ -293,7 +335,7 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
                                          struct u_string_list *enabled_instance_extensions,
                                          struct u_string_list *enabled_device_extensions)
 {
-	printf("Initializing vulkan display service\n");
+	//log_debug("Initializing vulkan display service\n");
 	auto ds = std::make_shared<monado_vulkan_display_provider>();
 	ds->vk_instance_ = instance;
 	ds->vk_physical_device_ = physical_device;
