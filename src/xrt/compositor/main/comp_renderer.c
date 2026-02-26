@@ -891,7 +891,7 @@ renderer_fini(struct comp_renderer *r)
  */
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
-
+/*
 // Static storage for Unity raw image readback
 static struct
 {
@@ -1062,7 +1062,7 @@ save_unity_raw_swapchain(struct comp_renderer *r,
 		break;
 	}
 }
-
+*/
 static bool
 create_illixr_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
 {
@@ -1174,7 +1174,7 @@ create_illixr_downsampled_images(struct comp_renderer *r, uint32_t width, uint32
 }
 
 #endif
-*/
+
  /*!
  * @pre render_gfx_init(render, &c->nr)
  */
