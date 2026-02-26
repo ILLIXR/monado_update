@@ -1,0 +1,33 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D depth_input;  // D16_UNORM input
+layout(binding = 1, rg8) uniform writeonly image2D rg_output;  // RG8 output
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(rg_output);
+
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    // Read normalized depth (0.0 to 1.0)
+    float depth_normalized = texelFetch(depth_input, coord, 0).r;
+
+    // Convert to 16-bit integer (0 to 65535)
+    uint depth_16bit = uint(depth_normalized * 65535.0 + 0.5);
+
+    // Pack into RG channels
+    uint r = (depth_16bit >> 8) & 0xFF;  // High byte
+    uint g = depth_16bit & 0xFF;          // Low byte
+
+    // Write as RG
+    vec4 packed = vec4(float(r) / 255.0,
+                       float(g) / 255.0,
+                       0.0,  // B unused
+                       0.0); // A unused
+
+    imageStore(rg_output, coord, packed);
+}

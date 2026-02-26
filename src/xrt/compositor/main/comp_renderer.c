@@ -154,6 +154,21 @@ struct comp_renderer
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	struct illixr_framebuffer illixr_framebuffers[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+	struct {
+		VkImage image;
+		VkDeviceMemory memory;
+		VkImageView view;
+		VkDeviceSize memory_size;
+		uint32_t width;
+		uint32_t height;
+	} illixr_depth_rg[2 * OFFLOAD_BUFFER_POOL_SIZE];  // 12 images (6 buffers × 2 eyes)
+
+	VkPipeline depth_to_rg_pipeline;
+	VkPipelineLayout depth_to_rg_layout;
+	VkDescriptorSetLayout depth_to_rg_desc_layout;
+	VkDescriptorPool depth_to_rg_desc_pool;
+	VkDescriptorSet depth_to_rg_desc_sets[2 * OFFLOAD_BUFFER_POOL_SIZE];
 #endif
 	//! @}
 };
