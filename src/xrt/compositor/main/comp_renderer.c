@@ -1320,14 +1320,14 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Start the graphics pipeline.
 	render_gfx_begin(render);
-/*
+
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	// ILLIXR: Save Unity's RAW swapchain (before any processing)
-	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
-		save_unity_raw_swapchain(r, render, layers, layer_count);
-	}
+	//if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
+	//	save_unity_raw_swapchain(r, render, layers, layer_count);
+	//}
 	// ILLIXR: DEBUG - Save Unity's submitted swapchain to disk
-	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && layer_count > 0) {
+	/* if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && layer_count > 0) {
 		static int save_counter = 0;
 
 		if (save_counter < 100) { // Save first 10 frames
@@ -1377,10 +1377,10 @@ dispatch_graphics(struct comp_renderer *r,
 				}
 			}
 		}
-	}
+	}*/
 #endif
 #ifdef USE_MONADO_ILLIXR_DRIVER
-	// ILLIXR: Clear scratch images before composition to eliminate triangular artifacts
+	/* // ILLIXR: Clear scratch images before composition to eliminate triangular artifacts
 	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
 		for (uint32_t eye = 0; eye < 2; eye++) {
 			uint32_t scratch_index = crss->views[eye].index;
@@ -1436,9 +1436,10 @@ dispatch_graphics(struct comp_renderer *r,
 			                         &barrier);
 		}
 		//COMP_INFO(c, "ILLIXR: All scratch clears recorded");
-	}
+		
+	}*/
 #endif
-*/
+
 	// Build the command buffer.
 	comp_render_gfx_dispatch( //
 	    render,               //
