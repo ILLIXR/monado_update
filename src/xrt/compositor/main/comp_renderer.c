@@ -48,6 +48,7 @@
 #include <math.h>
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
+#include "shaders/depth16_to_rg_spirv.h"
 #endif
 
 /*
@@ -154,6 +155,35 @@ struct comp_renderer
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	struct illixr_framebuffer illixr_framebuffers[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
+	VkPipeline depth_to_rg_pipeline;
+	VkPipelineLayout depth_to_rg_layout;
+	VkDescriptorSetLayout depth_to_rg_desc_layout;
+	VkDescriptorPool depth_to_rg_desc_pool;
+	VkDescriptorSet depth_to_rg_desc_sets[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+	// Color downsampled images for encoding (12 total: 6 buffers × 2 eyes)
+	struct {
+		VkImage image;
+		VkDeviceMemory memory;
+		VkImageView view;
+		VkDeviceSize memory_size;
+		VkDeviceSize memory_offset;
+		uint32_t width;
+		uint32_t height;
+	} illixr_color_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+	// Depth downsampled images from Unity (12 total: 6 buffers × 2 eyes)
+	struct {
+		VkImage image;
+		VkDeviceMemory memory;
+		VkImageView view;
+		VkDeviceSize memory_size;
+		VkDeviceSize memory_offset;
+		uint32_t width;
+		uint32_t height;
+	} illixr_depth_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+	// RG-encoded depth images for encoder (12 total: 6 buffers × 2 eyes)
 	struct {
 		VkImage image;
 		VkDeviceMemory memory;
@@ -161,23 +191,9 @@ struct comp_renderer
 		VkDeviceSize memory_size;
 		uint32_t width;
 		uint32_t height;
-	} illixr_depth_rg[2 * OFFLOAD_BUFFER_POOL_SIZE];  // 12 images (6 buffers × 2 eyes)
+	} illixr_depth_rg[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
-	VkPipeline depth_to_rg_pipeline;
-	VkPipelineLayout depth_to_rg_layout;
-	VkDescriptorSetLayout depth_to_rg_desc_layout;
-	VkDescriptorPool depth_to_rg_desc_pool;
-	VkDescriptorSet depth_to_rg_desc_sets[2 * OFFLOAD_BUFFER_POOL_SIZE];
-
-    struct {
-        VkImage image;
-        VkDeviceMemory memory;
-        VkImageView view;
-        uint32_t width;   // Target encoding width (1344)
-        uint32_t height;  // Target encoding height (1408)
-    } illixr_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
-
-    bool illixr_downsampled_created;
+	bool illixr_downsampled_created;
 #endif
 	//! @}
 };
@@ -616,6 +632,179 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 	return true;
 }
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+
+static VkShaderModule create_embedded_shader_module(struct vk_bundle* vk) {
+	VkShaderModuleCreateInfo create_info = {
+	    .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+	    .codeSize = depth16_to_rg_spirv_len,
+	    .pCode = (const uint32_t*)depth16_to_rg_spirv,
+	};
+
+	VkShaderModule shader_module;
+	VkResult ret = vk->vkCreateShaderModule(vk->device, &create_info,
+	                                        NULL, &shader_module);
+	if (ret != VK_SUCCESS) {
+		U_LOG_E("Failed to create shader module: %d", ret);
+		return VK_NULL_HANDLE;
+	}
+
+	return shader_module;
+}
+
+static void create_depth_to_rg_pipeline(struct comp_renderer* r) {
+	VkShaderModule shader_module = create_embedded_shader_module(&r->c->base.vk);
+	struct vk_bundle* vk = &r->c->base.vk;
+
+	// Descriptor set layout
+	VkDescriptorSetLayoutBinding bindings[2] = {
+	    {
+	        .binding = 0,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	        .descriptorCount = 1,
+	        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+	    },
+	    {
+	        .binding = 1,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	        .descriptorCount = 1,
+	        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+	    },
+	};
+
+	VkDescriptorSetLayoutCreateInfo desc_layout_info = {
+	    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+	    .bindingCount = 2,
+	    .pBindings = bindings,
+	};
+
+	VkResult ret = vk->vkCreateDescriptorSetLayout(vk->device, &desc_layout_info,
+	                                               NULL, &r->depth_to_rg_desc_layout);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(r->c, "Failed to create depth-to-RG descriptor layout: %d", ret);
+		return;
+	}
+
+	// Pipeline layout
+	VkPipelineLayoutCreateInfo pipeline_layout_info = {
+	    .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+	    .setLayoutCount = 1,
+	    .pSetLayouts = &r->depth_to_rg_desc_layout,
+	};
+
+	ret = vk->vkCreatePipelineLayout(vk->device, &pipeline_layout_info,
+	                                 NULL, &r->depth_to_rg_layout);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(r->c, "Failed to create depth-to-RG pipeline layout: %d", ret);
+		return;
+	}
+
+	// Compute pipeline
+	VkComputePipelineCreateInfo pipeline_info = {
+	    .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+	    .stage = {
+	        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+	        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+	        .module = shader_module,
+	        .pName = "main",
+	    },
+	    .layout = r->depth_to_rg_layout,
+	};
+
+	ret = vk->vkCreateComputePipelines(vk->device, VK_NULL_HANDLE, 1,
+	                                   &pipeline_info, NULL, &r->depth_to_rg_pipeline);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(r->c, "Failed to create depth-to-RG pipeline: %d", ret);
+		return;
+	}
+
+	vk->vkDestroyShaderModule(vk->device, shader_module, NULL);
+
+	COMP_INFO(r->c, "Created depth-to-RG conversion pipeline");
+}
+
+static void create_depth_to_rg_descriptors(struct comp_renderer* r) {
+	struct vk_bundle* vk = &r->c->base.vk;
+
+	// Create descriptor pool
+	VkDescriptorPoolSize pool_sizes[] = {
+	    {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * OFFLOAD_BUFFER_POOL_SIZE},
+	    {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * OFFLOAD_BUFFER_POOL_SIZE},
+	};
+
+	VkDescriptorPoolCreateInfo pool_info = {
+	    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+	    .maxSets = 2 * OFFLOAD_BUFFER_POOL_SIZE,
+	    .poolSizeCount = 2,
+	    .pPoolSizes = pool_sizes,
+	};
+
+	VkResult ret = vk->vkCreateDescriptorPool(vk->device, &pool_info, NULL,
+	                                          &r->depth_to_rg_desc_pool);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(r->c, "Failed to create depth-to-RG descriptor pool: %d", ret);
+		return;
+	}
+
+	// Allocate descriptor sets
+	VkDescriptorSetLayout layouts[2 * OFFLOAD_BUFFER_POOL_SIZE];
+	for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		layouts[i] = r->depth_to_rg_desc_layout;
+	}
+
+	VkDescriptorSetAllocateInfo alloc_info = {
+	    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+	    .descriptorPool = r->depth_to_rg_desc_pool,
+	    .descriptorSetCount = 2 * OFFLOAD_BUFFER_POOL_SIZE,
+	    .pSetLayouts = layouts,
+	};
+
+	ret = vk->vkAllocateDescriptorSets(vk->device, &alloc_info,
+	                                   r->depth_to_rg_desc_sets);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(r->c, "Failed to allocate depth-to-RG descriptor sets: %d", ret);
+		return;
+	}
+
+	// Update descriptor sets
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		VkDescriptorImageInfo depth_input_info = {
+		    .sampler = VK_NULL_HANDLE,  // Use immutable sampler or create one
+		    .imageView = r->illixr_depth_downsampled[i].view,  // Depth input
+		    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+
+		VkDescriptorImageInfo rg_output_info = {
+		    .imageView = r->illixr_depth_rg[i].view,  // RG output
+		    .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+		};
+
+		VkWriteDescriptorSet writes[2] = {
+		    {
+		        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		        .dstSet = r->depth_to_rg_desc_sets[i],
+		        .dstBinding = 0,
+		        .dstArrayElement = 0,
+		        .descriptorCount = 1,
+		        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		        .pImageInfo = &depth_input_info,
+		    },
+		    {
+		        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		        .dstSet = r->depth_to_rg_desc_sets[i],
+		        .dstBinding = 1,
+		        .dstArrayElement = 0,
+		        .descriptorCount = 1,
+		        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		        .pImageInfo = &rg_output_info,
+		    },
+		};
+
+		vk->vkUpdateDescriptorSets(vk->device, 2, writes, 0, NULL);
+	}
+}
+
+#endif
 //! Create renderer and initialize non-image-dependent members
 static void
 renderer_init(struct comp_renderer *r, struct comp_compositor *c, VkExtent2D scratch_extent)
@@ -671,6 +860,10 @@ renderer_init(struct comp_renderer *r, struct comp_compositor *c, VkExtent2D scr
 		COMP_ERROR(c, "comp_mirror_init: %s", vk_result_string(ret));
 		assert(false && "Whelp, can't return a error. But should never really fail.");
 	}
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	create_depth_to_rg_pipeline(r);
+	create_depth_to_rg_descriptors(r);
+#endif
 }
 
 static void
@@ -906,7 +1099,7 @@ renderer_fini(struct comp_renderer *r)
  */
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
-
+/*
 // Static storage for Unity raw image readback
 static struct
 {
@@ -1076,120 +1269,342 @@ save_unity_raw_swapchain(struct comp_renderer *r,
 		save_count++;
 		break;
 	}
-}
+}*/
 
-static bool
-create_illixr_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
-{
-    struct comp_compositor *c = r->c;
-    struct vk_bundle *vk = &c->base.vk;
+static void create_illixr_depth_rg_images(struct comp_renderer* r, uint32_t width, uint32_t height) {
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
 
-    COMP_INFO(c, "Creating ILLIXR downsampled images: %ux%u", width, height);
+	COMP_INFO(c, "Creating ILLIXR RG depth images: %ux%u", width, height);
 
-    for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
-        // Create image
-        VkImageCreateInfo img_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = VK_FORMAT_R8G8B8A8_SRGB,
-            .extent = {width, height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                     VK_IMAGE_USAGE_SAMPLED_BIT |
-                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        };
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		// Create RG8 image
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_R8G8_UNORM, // RG format (2 channels)
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage = VK_IMAGE_USAGE_STORAGE_BIT |      // For compute shader write
+		             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | // For export to encoder
+		             VK_IMAGE_USAGE_SAMPLED_BIT,       // For reading
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
 
-        VkResult ret = vk->vkCreateImage(vk->device, &img_info, NULL,
-                                        &r->illixr_downsampled[i].image);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to create downsampled image %d: %d", i, ret);
-            return false;
-        }
-
-        // Allocate memory with external memory export
-        VkMemoryRequirements mem_reqs;
-        vk->vkGetImageMemoryRequirements(vk->device, r->illixr_downsampled[i].image, &mem_reqs);
-
-        VkExportMemoryAllocateInfo export_info = {
-            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+		VkExternalMemoryImageCreateInfo external_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
 #ifdef _WIN32
-            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
 #else
-            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
 #endif
-        };
+		};
+		image_info.pNext = &external_info;
 
-        VkMemoryAllocateInfo alloc_info = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .pNext = &export_info,
-            .allocationSize = mem_reqs.size,
-            .memoryTypeIndex = 0, // Find appropriate memory type
-        };
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL, &r->illixr_depth_rg[i].image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create RG depth image %u: %d", i, ret);
+			return;
+		}
 
-        // Find device-local memory type
-        VkPhysicalDeviceMemoryProperties mem_props;
-        vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_props);
+		// Get memory requirements
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, r->illixr_depth_rg[i].image, &mem_reqs);
 
-        for (uint32_t j = 0; j < mem_props.memoryTypeCount; j++) {
-            if ((mem_reqs.memoryTypeBits & (1 << j)) &&
-                (mem_props.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                alloc_info.memoryTypeIndex = j;
-                break;
-            }
-        }
+		// Find memory type
+		uint32_t memory_type_index;
+		bool found =
+		    vk_get_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &memory_type_index);
+		if (!found) {
+			COMP_ERROR(c, "Failed to find suitable memory type for RG depth");
+			return;
+		}
 
-        ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL,
-                                   &r->illixr_downsampled[i].memory);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to allocate downsampled memory %d: %d", i, ret);
-            return false;
-        }
+		// Allocate exportable memory
+		VkExportMemoryAllocateInfo export_alloc = {
+		    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+#endif
+		};
 
-        ret = vk->vkBindImageMemory(vk->device, r->illixr_downsampled[i].image,
-                                    r->illixr_downsampled[i].memory, 0);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to bind downsampled memory %d: %d", i, ret);
-            return false;
-        }
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .pNext = &export_alloc,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex = memory_type_index,
+		};
 
-        // Create image view
-        VkImageViewCreateInfo view_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = r->illixr_downsampled[i].image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = VK_FORMAT_R8G8B8A8_SRGB,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &r->illixr_depth_rg[i].memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to allocate RG depth memory %u: %d", i, ret);
+			return;
+		}
 
-        ret = vk->vkCreateImageView(vk->device, &view_info, NULL,
-                                    &r->illixr_downsampled[i].view);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to create downsampled view %d: %d", i, ret);
-            return false;
-        }
-        r->illixr_downsampled[i].memory_size = mem_reqs.size;
-        r->illixr_downsampled[i].width = width;
-        r->illixr_downsampled[i].height = height;
-    }
+		// Bind memory
+		ret = vk->vkBindImageMemory(vk->device, r->illixr_depth_rg[i].image, r->illixr_depth_rg[i].memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to bind RG depth memory %u: %d", i, ret);
+			return;
+		}
 
-    r->illixr_downsampled_created = true;
-    COMP_INFO(c, "Created %d downsampled images for ILLIXR encoding", 2 * OFFLOAD_BUFFER_POOL_SIZE);
-    return true;
+		// Create image view
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = r->illixr_depth_rg[i].image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_R8G8_UNORM,
+		    .subresourceRange =
+		        {
+		            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		            .baseMipLevel = 0,
+		            .levelCount = 1,
+		            .baseArrayLayer = 0,
+		            .layerCount = 1,
+		        },
+		};
+
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL, &r->illixr_depth_rg[i].view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create RG depth view %u: %d", i, ret);
+			return;
+		}
+
+		// Store size info
+		r->illixr_depth_rg[i].memory_size = mem_reqs.size;
+		r->illixr_depth_rg[i].width = width;
+		r->illixr_depth_rg[i].height = height;
+	}
+
+	COMP_INFO(c, "Created %d RG depth images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 
+static void
+create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
+{
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+
+	COMP_INFO(c, "Creating ILLIXR color downsampled images: %ux%u", width, height);
+
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		// Create image
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_R8G8B8A8_UNORM,
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		             VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+		             VK_IMAGE_USAGE_SAMPLED_BIT,
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VkExternalMemoryImageCreateInfo external_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
 #endif
-*/
+		};
+		image_info.pNext = &external_info;
+
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL,
+		                                 &r->illixr_color_downsampled[i].image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create color downsampled image %u: %d", i, ret);
+			return;
+		}
+
+		// Get memory requirements
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, r->illixr_color_downsampled[i].image, &mem_reqs);
+
+		// Find memory type
+		uint32_t memory_type_index;
+		bool found = vk_get_memory_type(vk, mem_reqs.memoryTypeBits,
+		                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		                                &memory_type_index);
+		if (!found) {
+			COMP_ERROR(c, "Failed to find suitable memory type");
+			return;
+		}
+
+		// Allocate exportable memory
+		VkExportMemoryAllocateInfo export_alloc = {
+		    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+#endif
+		};
+
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .pNext = &export_alloc,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex = memory_type_index,
+		};
+
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL,
+		                           &r->illixr_color_downsampled[i].memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to allocate color memory %u: %d", i, ret);
+			return;
+		}
+
+		// Bind memory
+		ret = vk->vkBindImageMemory(vk->device, r->illixr_color_downsampled[i].image,
+		                            r->illixr_color_downsampled[i].memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to bind color memory %u: %d", i, ret);
+			return;
+		}
+
+		// Create image view
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = r->illixr_color_downsampled[i].image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_R8G8B8A8_UNORM,
+		    .subresourceRange = {
+		        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		        .baseMipLevel = 0,
+		        .levelCount = 1,
+		        .baseArrayLayer = 0,
+		        .layerCount = 1,
+		    },
+		};
+
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL,
+		                            &r->illixr_color_downsampled[i].view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create color view %u: %d", i, ret);
+			return;
+		}
+
+		// Store size info
+		r->illixr_color_downsampled[i].memory_size = mem_reqs.size;
+		r->illixr_color_downsampled[i].width = width;
+		r->illixr_color_downsampled[i].height = height;
+	}
+
+	COMP_INFO(c, "Created %d color downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+}
+
+static void
+create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
+{
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+
+	COMP_INFO(c, "Creating ILLIXR depth downsampled images: %ux%u", width, height);
+
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		// Create depth image
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_D16_UNORM,  // 16-bit depth
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		             VK_IMAGE_USAGE_SAMPLED_BIT,  // For compute shader input
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL,
+		                                 &r->illixr_depth_downsampled[i].image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create depth downsampled image %u: %d", i, ret);
+			return;
+		}
+
+		// Get memory requirements
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, r->illixr_depth_downsampled[i].image, &mem_reqs);
+
+		// Find memory type
+		uint32_t memory_type_index;
+		bool found = vk_get_memory_type(vk, mem_reqs.memoryTypeBits,
+		                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		                                &memory_type_index);
+		if (!found) {
+			COMP_ERROR(c, "Failed to find suitable memory type for depth");
+			return;
+		}
+
+		// Allocate memory
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex = memory_type_index,
+		};
+
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL,
+		                           &r->illixr_depth_downsampled[i].memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to allocate depth memory %u: %d", i, ret);
+			return;
+		}
+
+		// Bind memory
+		ret = vk->vkBindImageMemory(vk->device, r->illixr_depth_downsampled[i].image,
+		                            r->illixr_depth_downsampled[i].memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to bind depth memory %u: %d", i, ret);
+			return;
+		}
+
+		// Create image view
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = r->illixr_depth_downsampled[i].image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_D16_UNORM,
+		    .subresourceRange = {
+		        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+		        .baseMipLevel = 0,
+		        .levelCount = 1,
+		        .baseArrayLayer = 0,
+		        .layerCount = 1,
+		    },
+		};
+
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL,
+		                            &r->illixr_depth_downsampled[i].view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create depth view %u: %d", i, ret);
+			return;
+		}
+
+		// Store size info
+		r->illixr_depth_downsampled[i].memory_size = mem_reqs.size;
+		r->illixr_depth_downsampled[i].width = width;
+		r->illixr_depth_downsampled[i].height = height;
+	}
+
+	COMP_INFO(c, "Created %d depth downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+}
+#endif
+
  /*!
  * @pre render_gfx_init(render, &c->nr)
  */
@@ -1472,14 +1887,24 @@ dispatch_graphics(struct comp_renderer *r,
 			COMP_WARN(c, "ILLIXR: No buffer available, skipping frame");
 		} else {
 			//COMP_INFO(c, "ILLIXR: Acquired buffer index: %d", illixr_buffer_index);
-            // Create downsampled images if not already created
-            if (!r->illixr_downsampled_created) {
-                // Target encoding resolution (no scaling)
-                uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
-                uint32_t target_height = r->c->xdev->hmd->views[0].display.h_pixels;
-                create_illixr_downsampled_images(r, target_width, target_height);
-            }
+			// Create downsampled images if not already created
+			if (!r->illixr_downsampled_created) {
+				// Target encoding resolution (no scaling)
+				uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
+				uint32_t target_height = r->c->xdev->hmd->views[0].display.h_pixels;
+				// Create color downsampled images
+				create_illixr_color_downsampled_images(r, target_width, target_height);
 
+				// Create depth downsampled images
+				create_illixr_depth_downsampled_images(r, target_width, target_height);
+
+				// Create RG depth images
+				create_illixr_depth_rg_images(r, target_width, target_height);
+
+				// Create depth-to-RG pipeline and descriptors
+				create_depth_to_rg_pipeline(r);
+				create_depth_to_rg_descriptors(r);
+			}
 			// Copy both eyes from scratch images to buffer pool
 			for (uint32_t eye = 0; eye < 2; eye++) {
 				// Source: Scratch image for this eye (COLOR)
@@ -1489,97 +1914,97 @@ dispatch_graphics(struct comp_renderer *r,
 
 				int fb_idx = illixr_buffer_index * 2 + eye;
 
-                // Source: scratch image (1881×1971)
-                // Dest: downsampled image (1344×1408)
+				// Source: scratch image (1881×1971)
+				// Dest: downsampled image (1344×1408)
 
-                // Transition scratch to TRANSFER_SRC
-                VkImageMemoryBarrier barrier = {
-                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-                    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    .image = scratch_image->image,
-                    .subresourceRange = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .levelCount = 1,
-                        .layerCount = 1,
-                    },
-                };
+				// Transition scratch to TRANSFER_SRC
+				VkImageMemoryBarrier barrier = {
+				    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				    .image = scratch_image->image,
+				    .subresourceRange = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.levelCount = 1,
+					.layerCount = 1,
+				    },
+				};
 
-                vk->vkCmdPipelineBarrier(render->r->cmd,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    0, 0, NULL, 0, NULL, 1, &barrier);
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+							 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+							 VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 0, 0, NULL, 0, NULL, 1, &barrier);
 
-                // Transition downsampled to TRANSFER_DST
-                barrier.srcAccessMask = 0;
-                barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                barrier.image = r->illixr_downsampled[fb_idx].image;
+				// Transition downsampled to TRANSFER_DST
+				barrier.srcAccessMask = 0;
+				barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.image = r->illixr_color_downsampled[fb_idx].image;
 
-                vk->vkCmdPipelineBarrier(render->r->cmd,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    0, 0, NULL, 0, NULL, 1, &barrier);
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+							 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							 VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 0, 0, NULL, 0, NULL, 1, &barrier);
 
-                // Blit (downsample) scratch → downsampled
-                VkImageBlit blit = {
-                    .srcSubresource = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .layerCount = 1,
-                    },
-                    .srcOffsets = {
-                        {0, 0, 0},
-                        {scratch_view->info.width, scratch_view->info.height, 1},
-                    },
-                    .dstSubresource = {
-                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .layerCount = 1,
-                    },
-                    .dstOffsets = {
-                        {0, 0, 0},
-                        {r->illixr_downsampled[fb_idx].width,
-                         r->illixr_downsampled[fb_idx].height, 1},
-                    },
-                };
+				// Blit (downsample) scratch → downsampled
+				VkImageBlit blit = {
+				    .srcSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.layerCount = 1,
+				    },
+				    .srcOffsets = {
+					{0, 0, 0},
+					{scratch_view->info.width, scratch_view->info.height, 1},
+				    },
+				    .dstSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.layerCount = 1,
+				    },
+				    .dstOffsets = {
+					{0, 0, 0},
+					{r->illixr_color_downsampled[fb_idx].width,
+					    r->illixr_color_downsampled[fb_idx].height, 1},
+				    },
+				};
 
-                vk->vkCmdBlitImage(render->r->cmd,
-                    scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    r->illixr_downsampled[fb_idx].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    1, &blit, VK_FILTER_LINEAR);
+				vk->vkCmdBlitImage(render->r->cmd,
+						   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+						   r->illixr_color_downsampled[fb_idx].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						   1, &blit, VK_FILTER_LINEAR);
 
-                // Transition scratch back
-                barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                barrier.image = scratch_image->image;
+				// Transition scratch back
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+				barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+				barrier.image = scratch_image->image;
 
-                vk->vkCmdPipelineBarrier(render->r->cmd,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    0, 0, NULL, 0, NULL, 1, &barrier);
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+							 VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+							 0, 0, NULL, 0, NULL, 1, &barrier);
 
-                // Transition downsampled to SHADER_READ (for NVENC)
-                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.image = r->illixr_downsampled[fb_idx].image;
+				// Transition downsampled to SHADER_READ (for NVENC)
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				barrier.image = r->illixr_color_downsampled[fb_idx].image;
 
-                vk->vkCmdPipelineBarrier(render->r->cmd,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 0, NULL, 0, NULL, 1, &barrier);
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+							 VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							 0, 0, NULL, 0, NULL, 1, &barrier);
 
 				// Populate COLOR fields
-                r->illixr_framebuffers[fb_idx].image = r->illixr_downsampled[fb_idx].image;
-                r->illixr_framebuffers[fb_idx].memory = r->illixr_downsampled[fb_idx].memory;
-                r->illixr_framebuffers[fb_idx].view = r->illixr_downsampled[fb_idx].view;
-                r->illixr_framebuffers[fb_idx].image_extent.width = r->illixr_downsampled[fb_idx].width;
-                r->illixr_framebuffers[fb_idx].image_extent.height = r->illixr_downsampled[fb_idx].height;
+				r->illixr_framebuffers[fb_idx].image = r->illixr_color_downsampled[fb_idx].image;
+				r->illixr_framebuffers[fb_idx].memory = r->illixr_color_downsampled[fb_idx].memory;
+				r->illixr_framebuffers[fb_idx].view = r->illixr_color_downsampled[fb_idx].view;
+				r->illixr_framebuffers[fb_idx].image_extent.width = r->illixr_color_downsampled[fb_idx].width;
+				r->illixr_framebuffers[fb_idx].image_extent.height = r->illixr_color_downsampled[fb_idx].height;
 				r->illixr_framebuffers[fb_idx].image_size =
 				    scratch_view->native_images[scratch_index].size;
 				r->illixr_framebuffers[fb_idx].image_offset = 0;
@@ -1590,66 +2015,131 @@ dispatch_graphics(struct comp_renderer *r,
 
 				// Populate DEPTH fields from Unity's submitted layer
 				if (proj_layer != NULL && proj_layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
-					// Depth swapchains are in sc_array:
-					// sc_array[0] = left color, sc_array[1] = right color
-					// sc_array[2] = left depth, sc_array[3] = right depth
-					uint32_t depth_sc_index = 2 + eye; // 2 for left, 3 for right
+					uint32_t depth_sc_index = 2 + eye;
 					struct xrt_swapchain *depth_swapchain = proj_layer->sc_array[depth_sc_index];
 
 					if (depth_swapchain != NULL) {
-						// Get which image in the depth swapchain to use
-						uint32_t depth_image_index =
-						    proj_layer->data.depth.d[eye].sub.array_index;
-
-						// Cast to comp_swapchain to access Vulkan images
-						struct comp_swapchain *comp_sc =
-						    (struct comp_swapchain *)depth_swapchain;
+						uint32_t depth_image_index = proj_layer->data.depth.d[eye].sub.array_index;
+						struct comp_swapchain *comp_sc = (struct comp_swapchain *)depth_swapchain;
 
 						if (depth_image_index < depth_swapchain->image_count) {
-							// Access the Vulkan image from the image collection
-							r->illixr_framebuffers[fb_idx].depth_image =
-							    comp_sc->vkic.images[depth_image_index].handle;
-							r->illixr_framebuffers[fb_idx].depth_memory =
-							    comp_sc->vkic.images[depth_image_index].memory;
+							VkImage unity_depth_src = comp_sc->vkic.images[depth_image_index].handle;
 
-							// Get image view (if available)
-							if (comp_sc->images[depth_image_index].views.no_alpha != NULL) {
-								r->illixr_framebuffers[fb_idx].depth_view =
-								    comp_sc->images[depth_image_index]
-								        .views.no_alpha[0];
-							} else {
-								r->illixr_framebuffers[fb_idx].depth_view =
-								    VK_NULL_HANDLE;
-							}
+							// Step 1: Downsample Unity's depth to our depth buffer
+							VkImageMemoryBarrier barrier = {
+							    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+							    .srcAccessMask = 0,
+							    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+							    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+							    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .image = unity_depth_src,
+							    .subresourceRange = {
+							        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+							        .baseMipLevel = 0,
+							        .levelCount = 1,
+							        .baseArrayLayer = 0,
+							        .layerCount = 1,
+							    },
+							};
 
-							// Get depth extent - USE THE SAME AS COLOR (they should match)
-							// Or get from vkic if it has extent info
-							r->illixr_framebuffers[fb_idx].depth_extent.width =
-							    scratch_view->info.width;
-							r->illixr_framebuffers[fb_idx].depth_extent.height =
-							    scratch_view->info.height;
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &barrier);
 
-							// Get memory size
-							r->illixr_framebuffers[fb_idx].depth_size =
-							    comp_sc->vkic.images[depth_image_index].size;
+							// Transition our downsampled depth to TRANSFER_DST
+							barrier.srcAccessMask = 0;
+							barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+							barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							barrier.image = r->illixr_depth_downsampled[fb_idx].image;
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+							// Blit depth (downsample with NEAREST filter)
+							VkImageBlit depth_blit = {
+							    .srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+							    .srcOffsets = {{0, 0, 0},
+							                   {scratch_view->info.width, scratch_view->info.height, 1}},
+							    .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+							    .dstOffsets = {{0, 0, 0},
+							                   {r->illixr_depth_downsampled[fb_idx].width,
+							                    r->illixr_depth_downsampled[fb_idx].height, 1}},
+							};
+
+							vk->vkCmdBlitImage(render->r->cmd,
+							                   unity_depth_src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							                   r->illixr_depth_downsampled[fb_idx].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+							                   1, &depth_blit,
+							                   VK_FILTER_NEAREST);
+
+							// Step 2: Convert depth to RG with compute shader
+							// Transition depth to shader read
+							barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+							barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+							barrier.image = r->illixr_depth_downsampled[fb_idx].image;
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+							// Transition RG output to general
+							barrier.srcAccessMask = 0;
+							barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+							barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+							barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+							barrier.image = r->illixr_depth_rg[fb_idx].image;
+							barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+							// Dispatch compute shader (depth16 → RG8)
+							vk->vkCmdBindPipeline(render->r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+							                      r->depth_to_rg_pipeline);
+							vk->vkCmdBindDescriptorSets(render->r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+							                            r->depth_to_rg_layout, 0, 1,
+							                            &r->depth_to_rg_desc_sets[fb_idx], 0, NULL);
+
+							uint32_t group_x = (r->illixr_depth_rg[fb_idx].width + 15) / 16;
+							uint32_t group_y = (r->illixr_depth_rg[fb_idx].height + 15) / 16;
+							vk->vkCmdDispatch(render->r->cmd, group_x, group_y, 1);
+
+							// Transition RG to transfer src for export
+							barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+							barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+							barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+							barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+							barrier.image = r->illixr_depth_rg[fb_idx].image;
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+							// Step 3: Export RG depth to framebuffers (for ILLIXR encoder)
+							r->illixr_framebuffers[fb_idx].depth_image = r->illixr_depth_rg[fb_idx].image;
+							r->illixr_framebuffers[fb_idx].depth_memory = r->illixr_depth_rg[fb_idx].memory;
+							r->illixr_framebuffers[fb_idx].depth_view = r->illixr_depth_rg[fb_idx].view;
+							r->illixr_framebuffers[fb_idx].depth_extent.width = r->illixr_depth_rg[fb_idx].width;
+							r->illixr_framebuffers[fb_idx].depth_extent.height = r->illixr_depth_rg[fb_idx].height;
+							r->illixr_framebuffers[fb_idx].depth_size = r->illixr_depth_rg[fb_idx].memory_size;
 							r->illixr_framebuffers[fb_idx].depth_offset = 0;
 
-							//COMP_INFO(c,
-							//          "ILLIXR: Populated depth for framebuffer %d (eye=%d) "
-							//          "- depth_image=%p, size=%lu, extent=%ux%u",
-							//          fb_idx, eye,
-							//          (void *)r->illixr_framebuffers[fb_idx].depth_image,
-							//          (unsigned long)r->illixr_framebuffers[fb_idx].depth_size,
-							//          r->illixr_framebuffers[fb_idx].depth_extent.width,
-							//          r->illixr_framebuffers[fb_idx].depth_extent.height);
-						} else {
-							COMP_WARN(
-							    c,
-							    "ILLIXR: Invalid depth image index %d (max %d) for eye %d",
-							    depth_image_index, depth_swapchain->image_count, eye);
+							// Calculate buffer_idx for logging
+							uint32_t buffer_idx = fb_idx / 2;
+							COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d (D16→RG)", buffer_idx, eye);
 						}
-					} else {
-						COMP_WARN(c, "ILLIXR: Depth swapchain is NULL for eye %d", eye);
 					}
 				} else {
 					// No depth layer - clear depth fields

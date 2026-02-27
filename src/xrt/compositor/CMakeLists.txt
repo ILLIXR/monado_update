@@ -1,6 +1,9 @@
 # Copyright 2019-2024, Collabora, Ltd.
 # SPDX-License-Identifier: BSL-1.0
-
+if(XRT_BUILD_DRIVER_ILLIXR)
+	# Include shader compilation function
+	include(${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake/CompileShaders.cmake)
+endif()
 ###
 # Client library
 #
@@ -296,6 +299,10 @@ if(XRT_MODULE_COMPOSITOR_MAIN)
 		target_sources(comp_main PRIVATE main/comp_window_android.c)
 		target_link_libraries(comp_main PRIVATE aux_ogl aux_android)
 	endif()
+	if(XRT_BUILD_DRIVER_ILLIXR)
+		embed_spirv_shader(comp_main shaders/depth16_to_rg.comp)
+    endif()
+
 endif()
 
 ###

@@ -1,0 +1,43 @@
+#version 450
+
+// Workgroup size: 16x16 threads
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Input: D16_UNORM depth texture
+layout(binding = 0) uniform sampler2D u_depth_input;
+
+// Output: RG8 storage image
+layout(binding = 1, rg8) uniform writeonly image2D u_rg_output;
+
+void main() {
+    // Get pixel coordinates
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(u_rg_output);
+
+    // Boundary check
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+
+    // Read normalized depth value (0.0 to 1.0) from D16_UNORM
+    float depth_normalized = texelFetch(u_depth_input, coord, 0).r;
+
+    // Convert to 16-bit unsigned integer (0 to 65535)
+    // Add 0.5 for proper rounding
+    uint depth_16bit = uint(depth_normalized * 65535.0 + 0.5);
+
+    // Split into two 8-bit channels
+    uint r = (depth_16bit >> 8) & 0xFF;  // High byte (bits 15-8)
+    uint g = depth_16bit & 0xFF;          // Low byte (bits 7-0)
+
+    // Pack into RG image (normalize to 0.0-1.0 range)
+    vec4 packed = vec4(
+    float(r) / 255.0,  // R channel
+    float(g) / 255.0,  // G channel
+    0.0,               // B unused
+    0.0                // A unused
+    );
+
+    // Write to output RG image
+    imageStore(u_rg_output, coord, packed);
+}
