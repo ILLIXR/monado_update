@@ -212,27 +212,15 @@ illixr_hmd_get_tracked_pose(struct xrt_device *xdev,
 		return XRT_ERROR_INPUT_UNSUPPORTED;
 	}
 
-	out_relation->pose = illixr_read_pose();
-	out_relation->relation_flags = (enum xrt_space_relation_flags)(
-	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-	    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+	// illixr_read_head_relation populates pose, linear/angular velocity,
+	// and all relation flags (including velocity valid bits) from head_pose_type.
+	*out_relation = illixr_read_head_relation();
 	return XRT_SUCCESS;
 }
 
+
 /**
- * @brief Convert an illixr_hand_joint to an xrt_hand_joint_value.
- *
- * location_flags bit layout (from pose::joint_location_flags, matching XrSpaceLocationFlags):
- *   0x01  ORIENTATION_VALID   ? XRT_SPACE_RELATION_ORIENTATION_VALID_BIT
- *   0x02  POSITION_VALID      ? XRT_SPACE_RELATION_POSITION_VALID_BIT
- *   0x04  ORIENTATION_TRACKED ? XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT
- *   0x08  POSITION_TRACKED    ? XRT_SPACE_RELATION_POSITION_TRACKED_BIT
- *
- * XR_EXT_hand_tracking does not define per-joint velocity validity flags, so
- * XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT and
- * XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT are set whenever the joint
- * position is actively tracked (POSITION_TRACKED set), indicating the velocity
- * data is live.
+ * @brief Convert illixr_hand_joint to xrt_hand_joint_value
  */
 static void
 convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand_joint_value *dst)
@@ -250,36 +238,51 @@ convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand
 	// Radius
 	dst->radius = src->radius;
 
-	dst->relation.linear_velocity.x  = src->linear_velocity.x;
-	dst->relation.linear_velocity.y  = src->linear_velocity.y;
-	dst->relation.linear_velocity.z  = src->linear_velocity.z;
-	dst->relation.angular_velocity.x = src->angular_velocity.x;
-	dst->relation.angular_velocity.y = src->angular_velocity.y;
-	dst->relation.angular_velocity.z = src->angular_velocity.z;
-
+	// Build relation flags from ILLIXR location_flags, whose bit layout now
+	// matches Monado's xrt_space_relation_flags directly:
+	//   Bit 0 (0x01): Orientation valid
+	//   Bit 1 (0x02): Position valid
+	//   Bit 2 (0x04): Linear velocity valid
+	//   Bit 3 (0x08): Angular velocity valid
+	//   Bit 4 (0x10): Orientation tracked (live sensor data, not extrapolated)
+	//   Bit 5 (0x20): Position tracked (live sensor data, not extrapolated)
 	enum xrt_space_relation_flags flags = (enum xrt_space_relation_flags)0;
 
-	if (src->location_flags & 0x01u) { // ORIENTATION_VALID
+	if (src->location_flags & 0x01) { // Orientation valid
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT);
 	}
-	if (src->location_flags & 0x02u) { // POSITION_VALID
+	if (src->location_flags & 0x02) { // Position valid
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_VALID_BIT);
 	}
-	if (src->location_flags & 0x04u) { // ORIENTATION_TRACKED
+	if (src->location_flags & 0x10) { // Orientation tracked
 		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
 	}
-	if (src->location_flags & 0x08u) { // POSITION_TRACKED — velocities are live when position is tracked
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_TRACKED_BIT |
-		                                                XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT |
-		                                                XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
+	if (src->location_flags & 0x20) { // Position tracked
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
 	}
 
 	// If no pose flags were set but we have data, assume valid and tracked
 	if (flags == 0) {
 		flags = (enum xrt_space_relation_flags)(
-		    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT   | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-		    XRT_SPACE_RELATION_POSITION_VALID_BIT      | XRT_SPACE_RELATION_POSITION_TRACKED_BIT   |
-		    XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
+		    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
+		    XRT_SPACE_RELATION_POSITION_TRACKED_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
+	}
+
+	// Velocities
+	dst->relation.linear_velocity.x = src->linear_velocity.x;
+	dst->relation.linear_velocity.y = src->linear_velocity.y;
+	dst->relation.linear_velocity.z = src->linear_velocity.z;
+
+	dst->relation.angular_velocity.x = src->angular_velocity.x;
+	dst->relation.angular_velocity.y = src->angular_velocity.y;
+	dst->relation.angular_velocity.z = src->angular_velocity.z;
+
+	// Set velocity validity flags from location_flags bits 2 and 3
+	if (src->location_flags & 0x04) { // Linear velocity valid
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT);
+	}
+	if (src->location_flags & 0x08) { // Angular velocity valid
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
 	}
 
 	dst->relation.relation_flags = flags;
@@ -545,8 +548,8 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	       std::getenv("ILLIXR_OFFLOAD_FRAMES") ? std::getenv("ILLIXR_OFFLOAD_FRAMES") : "(not set)");
 	printf("[ILLIXR]   Hand tracking:          %s\n",    dh->hand_tracking_supported ? "ENABLED" : "DISABLED");
 	printf("[ILLIXR]   get_hand_tracking:       %p\n",   (void *)dh->base.get_hand_tracking);
-	printf("[ILLIXR]   get_palm_poses:          %p\n",   (void *)dh->get_palm_poses);
-	printf("[ILLIXR]   get_hand_interactions:   %p\n",   (void *)dh->get_hand_interactions);
+	//printf("[ILLIXR]   get_palm_poses:          %p\n",   (void *)dh->get_palm_poses);
+	//printf("[ILLIXR]   get_hand_interactions:   %p\n",   (void *)dh->get_hand_interactions);
 	printf("[ILLIXR]   get_tracked_pose:        %p\n",   (void *)dh->base.get_tracked_pose);
 	printf("[ILLIXR]   update_inputs:           %p\n",   (void *)dh->base.update_inputs);
 	printf("[ILLIXR]   destroy:                 %p\n",   (void *)dh->base.destroy);
@@ -567,17 +570,17 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
  * creation time.
  *
  * Inputs served:
- *   0  XRT_INPUT_GENERIC_PALM_POSE          — XR_EXT_palm_pose
- *   1  XRT_INPUT_HAND_AIM_POSE              — /input/aim/pose
- *   2  XRT_INPUT_HAND_GRIP_POSE             — /input/grip/pose
- *   3  XRT_INPUT_HAND_PINCH_POSE            — /input/pinch_ext/pose
- *   4  XRT_INPUT_HAND_POKE_POSE             — /input/poke_ext/pose
- *   5  XRT_INPUT_HAND_AIM_ACTIVATE_VALUE    — /input/aim_activate_ext/value
- *   6  XRT_INPUT_HAND_GRASP_VALUE           — /input/grasp_ext/value
- *   7  XRT_INPUT_HAND_PINCH_VALUE           — /input/pinch_ext/value
- *   8  XRT_INPUT_HAND_AIM_ACTIVATE_READY    — /input/aim_activate_ext/ready_ext
- *   9  XRT_INPUT_HAND_GRASP_READY           — /input/grasp_ext/ready_ext
- *   10 XRT_INPUT_HAND_PINCH_READY           — /input/pinch_ext/ready_ext
+ *   0  XRT_INPUT_GENERIC_PALM_POSE          - XR_EXT_palm_pose
+ *   1  XRT_INPUT_HAND_AIM_POSE              - /input/aim/pose
+ *   2  XRT_INPUT_HAND_GRIP_POSE             - /input/grip/pose
+ *   3  XRT_INPUT_HAND_PINCH_POSE            - /input/pinch_ext/pose
+ *   4  XRT_INPUT_HAND_POKE_POSE             - /input/poke_ext/pose
+ *   5  XRT_INPUT_HAND_AIM_ACTIVATE_VALUE    - /input/aim_activate_ext/value
+ *   6  XRT_INPUT_HAND_GRASP_VALUE           - /input/grasp_ext/value
+ *   7  XRT_INPUT_HAND_PINCH_VALUE           - /input/pinch_ext/value
+ *   8  XRT_INPUT_HAND_AIM_ACTIVATE_READY    - /input/aim_activate_ext/ready_ext
+ *   9  XRT_INPUT_HAND_GRASP_READY           - /input/grasp_ext/ready_ext
+ *   10 XRT_INPUT_HAND_PINCH_READY           - /input/pinch_ext/ready_ext
  * =========================================================================
  */
 
@@ -673,7 +676,7 @@ illixr_hand_device_update_inputs(struct xrt_device *xdev)
  *
  * An invalid or unavailable pose is signalled by setting relation_flags to 0,
  * which causes xrLocateSpace to return the position and orientation valid bits
- * clear — the correct spec-compliant response for an unlocatable space.
+ * clear - the correct spec-compliant response for an unlocatable space.
  */
 static xrt_result_t
 illixr_hand_device_get_tracked_pose(struct xrt_device *xdev,

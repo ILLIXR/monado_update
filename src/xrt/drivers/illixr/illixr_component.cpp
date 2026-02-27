@@ -197,24 +197,54 @@ illixr_monado_wait_for_init(void)
 	}
 }
 
-extern "C" struct xrt_pose
-illixr_read_pose()
+extern "C" struct xrt_space_relation
+illixr_read_head_relation()
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-	//if (!illixr_plugin_obj->sb_pose->fast_pose_reliable()) {
-	//	log_debug("Pose not reliable yet; returning best guess");
-	//}
-	struct xrt_pose ret;
+
+	struct xrt_space_relation relation = {};
+
 	const pose::fast_head_pose_type fast_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
-	const pose::head_pose_type curr_pose = fast_pose.pose;
-	ret.orientation.x = curr_pose.orientation.x();
-	ret.orientation.y = curr_pose.orientation.y();
-	ret.orientation.z = curr_pose.orientation.z();
-	ret.orientation.w = curr_pose.orientation.w();
-	ret.position.x = curr_pose.position.x();
-	ret.position.y = curr_pose.position.y();
-	ret.position.z = curr_pose.position.z();
-	return ret;
+	const pose::head_pose_type& curr_pose     = fast_pose.pose;
+
+	// Pose
+	relation.pose.orientation.x = curr_pose.orientation.x();
+	relation.pose.orientation.y = curr_pose.orientation.y();
+	relation.pose.orientation.z = curr_pose.orientation.z();
+	relation.pose.orientation.w = curr_pose.orientation.w();
+	relation.pose.position.x    = curr_pose.position.x();
+	relation.pose.position.y    = curr_pose.position.y();
+	relation.pose.position.z    = curr_pose.position.z();
+
+	// Velocities — only written when the corresponding validity flag is set
+	if (curr_pose.linear_velocity_valid) {
+		relation.linear_velocity.x = curr_pose.linear_velocity.x();
+		relation.linear_velocity.y = curr_pose.linear_velocity.y();
+		relation.linear_velocity.z = curr_pose.linear_velocity.z();
+	}
+	if (curr_pose.angular_velocity_valid) {
+		relation.angular_velocity.x = curr_pose.angular_velocity.x();
+		relation.angular_velocity.y = curr_pose.angular_velocity.y();
+		relation.angular_velocity.z = curr_pose.angular_velocity.z();
+	}
+
+	// Pose is always considered valid and tracked when the pose prediction
+	// interface has data; velocity flags are conditional on the source.
+	enum xrt_space_relation_flags flags = (enum xrt_space_relation_flags)(
+	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT   |
+	    XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+	    XRT_SPACE_RELATION_POSITION_VALID_BIT       |
+	    XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+
+	if (curr_pose.linear_velocity_valid) {
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT);
+	}
+	if (curr_pose.angular_velocity_valid) {
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
+	}
+
+	relation.relation_flags = flags;
+	return relation;
 }
 
 /*
@@ -233,10 +263,7 @@ illixr_hand_tracking_supported(void)
 }
 
 /**
- * @brief Convert a pose::hand_joint_pose to an illixr_hand_joint.
- *
- * location_flags is forwarded verbatim: the bit layout of pose::joint_location_flags
- * matches XrSpaceLocationFlags, so no translation is needed.
+ * @brief Convert ILLIXR hand_joint_pose to illixr_hand_joint
  */
 static void
 convert_joint(const pose::hand_joint_pose &src, struct illixr_hand_joint *dst)
@@ -260,56 +287,21 @@ convert_joint(const pose::hand_joint_pose &src, struct illixr_hand_joint *dst)
 	dst->angular_velocity.y = src.angular_velocity.y();
 	dst->angular_velocity.z = src.angular_velocity.z();
 
-	// pose::joint_location_flags bit layout matches XrSpaceLocationFlags exactly.
-	dst->location_flags = static_cast<uint32_t>(src.location_flags);
+	dst->location_flags = src.location_flags;
 }
 
 /**
- * @brief Convert a pose::hand_joint_poses to an illixr_single_hand.
+ * @brief Convert ILLIXR single_hand_state to illixr_single_hand
  */
 static void
 convert_single_hand(const pose::hand_joint_poses &src, struct illixr_single_hand *dst)
 {
-	dst->is_active  = src.hand_tracked;
+	dst->is_active = src.hand_tracked;
 	dst->confidence = src.confidence;
 
-	for (int i = 0; i < pose::HAND_JOINT_COUNT && i < ILLIXR_HAND_JOINT_COUNT; ++i) {
-		convert_joint(src.joints[static_cast<size_t>(i)], &dst->joints[i]);
+	for (size_t i = 0; i < pose::HAND_JOINT_COUNT; ++i) {
+		convert_joint(src.joints[i], &dst->joints[i]);
 	}
-}
-
-extern "C" bool
-illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data)
-{
-	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-	assert(out_data && "out_data must not be null.");
-
-	if (!illixr_plugin_obj->hand_tracking_enabled_) {
-		out_data->valid                  = false;
-		out_data->left_hand.is_active    = false;
-		out_data->right_hand.is_active   = false;
-		return false;
-	}
-
-	// Try to get hand tracking data from the switchboard
-	std::shared_ptr<const pose::hand_joint_poses_pair> hand_data =
-	    illixr_plugin_obj->hand_pose_reader_.get_ro_nullable();
-
-	if (!hand_data || !hand_data->has_hands()) {
-		out_data->valid                  = false;
-		out_data->left_hand.is_active    = false;
-		out_data->right_hand.is_active   = false;
-		return false;
-	}
-
-	// Convert left hand
-	convert_single_hand(hand_data->hands.at(pose::LEFT), &out_data->left_hand);
-
-	// Convert right hand
-	convert_single_hand(hand_data->hands.at(pose::RIGHT), &out_data->right_hand);
-
-	out_data->valid = true;
-	return true;
 }
 
 extern "C" bool
@@ -317,7 +309,7 @@ illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand)
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
 	assert(out_hand && "out_hand must not be null.");
-	assert((hand == 0 || hand == 1) && "hand must be 0 (left) or 1 (right).");
+	assert(hand == 0 || hand == 1 && "hand must be 0 (left) or 1 (right).");
 
 	if (!illixr_plugin_obj->hand_tracking_enabled_) {
 		out_hand->is_active = false;
@@ -333,10 +325,9 @@ illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand)
 		return false;
 	}
 
-	const pose::hand_joint_poses &src =
-	    hand_data->hands.at(hand == 0 ? pose::LEFT : pose::RIGHT);
+	const pose::hand_joint_poses &src = (hand == 0) ? hand_data->hands.at(pose::LEFT) : hand_data->hands.at(pose::RIGHT);
 
-	if (!src.hand_tracked) {
+	if (!src.is_tracked()) {
 		out_hand->is_active = false;
 		return false;
 	}

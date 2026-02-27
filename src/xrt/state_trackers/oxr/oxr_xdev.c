@@ -137,13 +137,6 @@ oxr_xdev_get_hand_tracking_at(struct oxr_logger *log,
 
 	int64_t ignored;
 
-	if (xdev == NULL) {
-		return XR_ERROR_HANDLE_INVALID;
-	}
-
-	if (xdev->get_hand_tracking == NULL) {
-		return XR_ERROR_FUNCTION_UNSUPPORTED;
-	}
 	xrt_device_get_hand_tracking(xdev, name, at_timestamp_ns, &value, &ignored);
 
 	*out_value = value;

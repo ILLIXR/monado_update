@@ -39,10 +39,12 @@ extern "C" {
  *
  * Values match XrSpaceLocationFlags / pose::joint_location_flags so they can
  * be forwarded to Monado without translation:
- *   0x01  ORIENTATION_VALID   — orientation has a usable (possibly last-known) value
- *   0x02  POSITION_VALID      — position has a usable (possibly last-known) value
- *   0x04  ORIENTATION_TRACKED — orientation is live sensor data
- *   0x08  POSITION_TRACKED    — position is live sensor data
+ *   Bit 0 (0x01): Orientation valid
+ *   Bit 1 (0x02): Position valid
+ *   Bit 2 (0x04): Linear velocity valid
+ *   Bit 3 (0x08): Angular velocity valid
+ *   Bit 4 (0x10): Orientation tracked (live sensor data, not extrapolated)
+ *   Bit 5 (0x20): Position tracked (live sensor data, not extrapolated)
  */
 
 /**
@@ -203,6 +205,9 @@ bool illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand);
  * @return true if valid data was written
  */
 bool illixr_read_palm_pose(int hand, struct illixr_palm_pose *out_pose);
+
+struct xrt_space_relation
+illixr_read_head_relation(void);
 
 /*
  *
