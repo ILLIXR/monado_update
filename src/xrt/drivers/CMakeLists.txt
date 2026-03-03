@@ -390,9 +390,21 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 		illixr/illixr_component.cpp
 		illixr/illixr_component.h
 		)
-	target_link_libraries(drv_illixr PUBLIC ${CMAKE_DL_LIBS} xrt-interfaces aux_util aux_os spdlog::spdlog aux_vk Boost::serialization)
-	target_include_directories(drv_illixr PUBLIC ${ILLIXR_PATH})
+	target_link_libraries(drv_illixr PUBLIC
+	                      ${CMAKE_DL_LIBS}
+						  xrt-interfaces
+						  aux_util
+						  aux_os
+						  spdlog::spdlog
+						  aux_vk
+						  Boost::serialization
+	)
+	target_include_directories(drv_illixr PUBLIC
+	                           ${ILLIXR_PATH}
+							   ${CMAKE_CURRENT_SOURCE_DIR}/../compositor
+	)
 	list(APPEND ENABLED_HEADSET_DRIVERS illixr)
+	target_compile_definitions(drv_illixr PRIVATE BUILDING_MONADO_ILLIXR_DRIVER)
 endif()
 
 add_library(drv_multi STATIC multi_wrapper/multi.c multi_wrapper/multi.h)

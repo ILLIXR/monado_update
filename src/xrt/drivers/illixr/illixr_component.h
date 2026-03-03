@@ -14,6 +14,8 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
+#include "illixr_framebuffer.h"
+
 #include "util/u_string_list.h"
 #include "xrt/xrt_defines.h"
 
@@ -22,10 +24,10 @@ extern "C" {
 #endif
 
 /*
-*
-* Hand tracking constants and structures
-*
-*/
+ *
+ * Hand-joint tracking constants and structures
+ *
+ */
 
 /**
  * @brief Number of joints per hand (matches OpenXR XR_HAND_JOINT_COUNT_EXT)
@@ -33,35 +35,102 @@ extern "C" {
 #define ILLIXR_HAND_JOINT_COUNT 26
 
 /**
- * @brief Hand joint data for a single joint
+ * @brief Tracking validity flags for a single hand joint.
  *
- * Contains position, orientation, radius, and tracking validity.
+ * Values match XrSpaceLocationFlags / pose::joint_location_flags so they can
+ * be forwarded to Monado without translation:
+ *   Bit 0 (0x01): Orientation valid
+ *   Bit 1 (0x02): Position valid
+ *   Bit 2 (0x04): Linear velocity valid
+ *   Bit 3 (0x08): Angular velocity valid
+ *   Bit 4 (0x10): Orientation tracked (live sensor data, not extrapolated)
+ *   Bit 5 (0x20): Position tracked (live sensor data, not extrapolated)
+ */
+
+/**
+ * @brief Pose and velocity data for a single tracked hand joint.
  */
 struct illixr_hand_joint {
-	struct xrt_vec3 position;       //!< 3D position in meters
-	struct xrt_quat orientation;    //!< Rotation quaternion
-	float radius;                   //!< Joint radius in meters
-	struct xrt_vec3 linear_velocity;  //!< Linear velocity m/s
-	struct xrt_vec3 angular_velocity; //!< Angular velocity rad/s
-	uint32_t location_flags;         //!< Tracking validity flags
+    struct xrt_vec3 position;         //!< Joint position in metres
+    struct xrt_quat orientation;      //!< Joint orientation quaternion
+    float           radius;           //!< Approximate joint sphere radius in metres
+    struct xrt_vec3 linear_velocity;  //!< Linear velocity in m/s
+    struct xrt_vec3 angular_velocity; //!< Angular velocity in rad/s
+    uint32_t        location_flags;   //!< XrSpaceLocationFlags bitmask (see above)
 };
 
 /**
- * @brief Hand tracking data for a single hand
+ * @brief Joint tracking data for a single hand.
  */
 struct illixr_single_hand {
-	struct illixr_hand_joint joints[ILLIXR_HAND_JOINT_COUNT]; //!< All 26 joints
-	bool is_active;     //!< Whether hand is currently tracked
-	float confidence;   //!< Tracking confidence 0.0-1.0
+    struct illixr_hand_joint joints[ILLIXR_HAND_JOINT_COUNT]; //!< All 26 joints
+    bool  is_active;  //!< Whether the hand is currently tracked
+    float confidence; //!< Overall tracking confidence in [0, 1]
 };
 
 /**
- * @brief Hand tracking data for both hands
+ * @brief Joint tracking data for both hands.
  */
 struct illixr_hand_tracking_data {
-	struct illixr_single_hand left_hand;   //!< Left hand data
-	struct illixr_single_hand right_hand;  //!< Right hand data
-	bool valid;                            //!< Whether data is valid
+    struct illixr_single_hand left_hand;  //!< Left hand joint data
+    struct illixr_single_hand right_hand; //!< Right hand joint data
+    bool valid;                           //!< Whether this struct contains valid data
+};
+
+/*
+ *
+ * Palm-pose structures (XR_EXT_palm_pose)
+ *
+ */
+
+/**
+ * @brief Pose of a single palm as defined by XR_EXT_palm_pose.
+ *
+ * Coordinate convention (XR_EXT_palm_pose spec):
+ * - Origin: centred on the skin of the palm.
+ * - +Z: outward from the back of the hand.
+ * - +Y: from wrist toward the middle finger.
+ * - +X: rightward when looking at the back of the hand (right-hand rule).
+ */
+struct illixr_palm_pose {
+    struct xrt_vec3 position;    //!< Palm origin in metres
+    struct xrt_quat orientation; //!< Palm orientation quaternion
+    bool            valid;       //!< Whether this pose is valid
+};
+
+/*
+ *
+ * Hand-interaction pose structures (XR_EXT_hand_interaction)
+ *
+ */
+
+/**
+ * @brief A single hand interaction pose with its accompanying scalar inputs.
+ *
+ * Used for AIM, GRIP, PINCH, and POKE pose types.  @c value and @c ready are
+ * meaningful only for AIM, GRIP, and PINCH; they are always 0 / false for POKE.
+ */
+struct illixr_interaction_pose {
+    struct xrt_vec3 position;    //!< Action-space origin in metres
+    struct xrt_quat orientation; //!< Action-space orientation quaternion
+    float           value;       //!< Gesture-strength scalar in [0, 1]
+    bool            ready;       //!< Whether the gesture is currently activatable
+    bool            valid;       //!< Whether this pose is valid
+};
+ 
+
+#define ILLIXR_INTERACTION_AIM   0 /*!< /input/aim/pose + aim_activate_ext scalars   */
+#define ILLIXR_INTERACTION_GRIP  1 /*!< /input/grip/pose + grasp_ext scalars          */
+#define ILLIXR_INTERACTION_PINCH 2 /*!< /input/pinch_ext/pose + pinch_ext scalars     */
+#define ILLIXR_INTERACTION_POKE  3 /*!< /input/poke_ext/pose (no scalars)             */
+#define ILLIXR_NUM_INTERACTION_POSES 4
+
+/**
+ * @brief All four interaction poses for one hand, indexed by ILLIXR_INTERACTION_*.
+ */
+struct illixr_hand_interaction_data {
+	struct illixr_interaction_pose poses[ILLIXR_NUM_INTERACTION_POSES];
+	bool valid; //!< Whether any pose data is available for this hand
 };
 
 /*
@@ -71,15 +140,15 @@ struct illixr_hand_tracking_data {
  */
 
 /**
- * @brief Create the ILLIXR plugin and register with phonebook
+ * @brief Create the ILLIXR plugin and register with the phonebook.
  * @param pb Phonebook pointer
- * @return Plugin instance
+ * @return Plugin instance pointer
  */
-
 void *
 illixr_monado_create_plugin(void *pb);
+
 /**
- * @brief Wait for ILLIXR initialization to complete
+ * @brief Block until ILLIXR Vulkan display-service initialization is complete.
  */
 void
 illixr_monado_wait_for_init(void);
@@ -99,13 +168,60 @@ illixr_read_pose(void);
 
 /*
  *
- * Hand-tracking functions
+ * Hand-tracking functions (XR_EXT_hand_tracking)
  *
  */
 
+/**
+ * @brief Returns true if hand-joint tracking data is available on the switchboard.
+ */
 bool illixr_hand_tracking_supported(void);
+
+/**
+ * @brief Read joint tracking data for both hands.
+ * @param out_data Output struct to populate; out_data->valid set to false on failure
+ * @return true if valid data was written
+ */
 bool illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data);
+
+/**
+ * @brief Read joint tracking data for one hand.
+ * @param hand      0 for left, 1 for right
+ * @param out_hand  Output struct to populate
+ * @return true if valid data was written
+ */
 bool illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand);
+
+/*
+ *
+ * Palm pose functions (XR_EXT_palm_pose)
+ *
+ * @param hand  0 = left, 1 = right
+ */
+
+/**
+ * @brief Read palm poses for both hands from the switchboard.
+ * @param out_poses Output struct to populate; out_poses->valid set to false on failure
+ * @return true if valid data was written
+ */
+bool illixr_read_palm_pose(int hand, struct illixr_palm_pose *out_pose);
+
+struct xrt_space_relation
+illixr_read_head_relation(void);
+
+/*
+ *
+ * Hand interaction functions (XR_EXT_hand_interaction)
+ *
+ * @param hand  0 = left, 1 = right
+ */
+
+/**
+ * @brief Read hand-interaction poses for both hands from the switchboard.
+ * @param out_interactions Output struct to populate; out_interactions->valid set to false on failure
+ * @return true if valid data was written
+ */
+bool illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_data);
 
 /*
  *
@@ -113,8 +229,27 @@ bool illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand);
  *
  */
 
-void illixr_initialize_vulkan_display_service(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, VkQueue queue, uint32_t queue_family_index, struct u_string_list *enabled_instance_extensions, struct u_string_list *enabled_device_extensions);
-void illixr_initialize_timewarp(VkRenderPass render_pass, uint32_t subpass, VkExtent2D extent, VkImage* image, VkImageView* image_view, VkDeviceMemory* device_memory, VkDeviceSize* size, VkDeviceSize* offset, uint32_t num_buffers_per_eye);
+void
+illixr_initialize_vulkan_display_service(VkInstance instance,
+                                         VkPhysicalDevice physical_device,
+                                         VkDevice device,
+                                         VkQueue queue,
+                                         uint32_t queue_family_index,
+                                         struct u_string_list *enabled_instance_extensions,
+                                         struct u_string_list *enabled_device_extensions);
+
+void
+illixr_initialize_timewarp(VkRenderPass render_pass,
+                           uint32_t subpass,
+                           VkExtent2D extent,
+                           VkImage *image,
+                           VkImageView *image_view,
+                           VkDeviceMemory *device_memory,
+                           VkDeviceSize *size,
+                           VkDeviceSize *offset,
+                           uint32_t num_buffers_per_eye,
+                           struct illixr_framebuffer *framebuffer_array);
+
 int8_t illixr_src_acquire();
 void illixr_src_release(int8_t buffer_ind, struct xrt_pose l_pose, struct xrt_pose r_pose);
 void illixr_destroy_timewarp(void);
@@ -123,6 +258,8 @@ int illixr_sleep_time();
 void illixr_tw_update_uniforms(struct xrt_pose l_pose, struct xrt_pose r_pose);
 void illixr_tw_record_command_buffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, int buffer_ind, int left);
 void illixr_publish_vsync_estimate(uint64_t display_time_ns);
+
+VkExtent2D illixr_get_extent(void);
 
 #ifdef __cplusplus
 }

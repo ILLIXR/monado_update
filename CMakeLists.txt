@@ -401,6 +401,9 @@ option(XRT_FEATURE_OPENXR_LAYER_FB_PASSTHROUGH "Enable XR_FB_passthrough" OFF)
 option(XRT_FEATURE_OPENXR_SPACE_LOCAL_FLOOR "Enable XR_EXT_local_floor" ON)
 option(XRT_FEATURE_OPENXR_SPACE_UNBOUNDED "Enable XR_MSFT_unbounded_reference_space" ON)
 
+if(XRT_BUILD_DRIVER_ILLIXR)
+	add_compile_definitions(USE_MONADO_ILLIXR_DRIVER)
+endif()
 # cmake-format: on
 
 # You can set this from a superproject to add a driver

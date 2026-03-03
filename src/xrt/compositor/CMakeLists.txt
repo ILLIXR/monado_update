@@ -1,6 +1,9 @@
 # Copyright 2019-2024, Collabora, Ltd.
 # SPDX-License-Identifier: BSL-1.0
-
+if(XRT_BUILD_DRIVER_ILLIXR)
+	# Include shader compilation function
+	include(${CMAKE_CURRENT_SOURCE_DIR}/../../../cmake/CompileShaders.cmake)
+endif()
 ###
 # Client library
 #
@@ -169,10 +172,6 @@ if(XRT_HAVE_VULKAN)
 		PRIVATE aux_util aux_os aux_vk comp_render
 		)
 	target_include_directories(comp_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-	if(XRT_BUILD_DRIVER_ILLIXR)
-		target_compile_definitions(comp_util PUBLIC USE_MONADO_ILLIXR_DRIVER)
-	endif()
-
 endif()
 
 ##
@@ -301,8 +300,9 @@ if(XRT_MODULE_COMPOSITOR_MAIN)
 		target_link_libraries(comp_main PRIVATE aux_ogl aux_android)
 	endif()
 	if(XRT_BUILD_DRIVER_ILLIXR)
-		target_compile_definitions(comp_main PUBLIC USE_MONADO_ILLIXR_DRIVER)
-	endif()
+		embed_spirv_shader(comp_main shaders/depth16_to_rg.comp)
+    endif()
+
 endif()
 
 ###
@@ -330,10 +330,6 @@ target_include_directories(comp_multi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(XRT_MODULE_COMPOSITOR_MAIN)
 	target_link_libraries(comp_main PRIVATE comp_multi)
-endif()
-
-if(XRT_BUILD_DRIVER_ILLIXR)
-	target_compile_definitions(comp_multi PUBLIC USE_MONADO_ILLIXR_DRIVER)
 endif()
 
 ###

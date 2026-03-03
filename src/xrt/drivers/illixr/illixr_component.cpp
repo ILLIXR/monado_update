@@ -15,33 +15,79 @@
 
 #include "xrt/xrt_device.h"
 #include "util/u_string_list.h"
+#include "main/comp_renderer.h"
 
 #include <memory>
 #include <vulkan/vulkan.h>
 
 #include <iostream>
+#include <mutex>
+#include <queue>
+#include <string>
 #include <thread>
 #include <vector>
 
-#include "illixr/plugin.hpp"
 #include "illixr/phonebook.hpp"
+#include "illixr/plugin.hpp"
 #include "illixr/switchboard.hpp"
 #include "illixr/data_format/pose_prediction.hpp"
 #ifndef USING_OPENXR
 #define USING_OPENXR
 #endif
-#include "illixr/data_format/hand_tracking_data.hpp"
-#include "illixr/vk/render_pass.hpp"
+#include "illixr/data_format/poses/hand_interaction_pose.hpp"
+#include "illixr/data_format/poses/hand_pose.hpp"
+#include "illixr/data_format/poses/palm_pose.hpp"
 #include "illixr/vk/display_provider.hpp"
+#include "illixr/vk/render_pass.hpp"
 #include "illixr/vk/vulkan_objects.hpp"
 
 #include "illixr_component.h"
 
-#include <chrono>
 #include <cstdlib>
-#include <mutex>
-#include <queue>
-#include <string>
+// Debug file logger - static global
+#ifdef BUILD_WITH_LOGGING
+static FILE *g_debug_log3 = NULL;
+
+static void
+init_debug_log(void)
+{
+	if (g_debug_log3 == NULL) {
+		g_debug_log3 = fopen("D:\\illixr_comp_debug.log", "w");
+		if (g_debug_log3) {
+			fprintf(g_debug_log3, "=== Hand Tracking Debug Log Started ===\n");
+			fflush(g_debug_log3);
+		}
+	}
+}
+
+static void
+log_debug(const char *format, ...)
+{
+	if (g_debug_log3 == NULL) {
+		init_debug_log();
+	}
+
+	if (g_debug_log3) {
+		// Get timestamp
+		time_t now = time(NULL);
+		struct tm *tm_info = localtime(&now);
+		char time_buf[64];
+		strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
+
+		// Write timestamp
+		fprintf(g_debug_log3, "[%s] ", time_buf);
+
+		// Write actual message
+		va_list args;
+		va_start(args, format);
+		vfprintf(g_debug_log3, format, args);
+		va_end(args);
+
+		fprintf(g_debug_log3, "\n");
+		fflush(g_debug_log3); // CRITICAL - force write immediately
+	}
+}
+#endif
 
 using namespace ILLIXR;
 using namespace ILLIXR::vulkan;
@@ -59,16 +105,21 @@ class monado_compositor_app : public app
 
 static std::atomic<bool> _ds_ready = false;
 
-/// Simulated plugin class for an instance during phonebook registration
+// Simulated plugin class for an instance during phonebook registration
 class illixr_plugin : public plugin
 {
 public:
 	illixr_plugin(const std::string &name_, phonebook *pb_)
-	    : plugin{name_, pb_}, pb{pb_}, sb{phonebook_->lookup_impl<switchboard>()},
-	      sb_pose{phonebook_->lookup_impl<pose_prediction>()}, sb_clock{phonebook_->lookup_impl<relative_clock>()},
-	      ds{std::make_shared<monado_vulkan_display_provider>()},
-	      _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")},
-	      hand_tracking_reader_{sb->get_reader<openxr::hand_tracking_data>("hand_tracking")}
+	    : plugin{name_, pb_}
+	    , pb{pb_}
+	    , sb{phonebook_->lookup_impl<switchboard>()}
+	    , sb_pose{phonebook_->lookup_impl<pose_prediction>()}
+	    , sb_clock{phonebook_->lookup_impl<relative_clock>()}
+	    , ds{std::make_shared<monado_vulkan_display_provider>()}
+	    , _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")}
+	    , hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")}
+	    , hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")}
+	    , palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
 	{
 		sb_timewarp = pb_->lookup_impl<timewarp>();
 
@@ -88,31 +139,45 @@ public:
 			// Default to enabled if offloading frames
 			hand_tracking_enabled_ = offload_frames;
 		}
-
-		std::cout << PREFIX << "Hand tracking " << (hand_tracking_enabled_ ? "enabled" : "disabled")
-		          << std::endl;
+		
+		if (std::getenv("ILLIXR_USE_PALM_POSES") != nullptr) {
+			std::string val = std::getenv("ILLIXR_USE_PALM_POSES");
+			palm_poses_enabled_ = (val == "1" || val == "true" || val == "TRUE");
+        }
+        
+		if (std::getenv("ILLIXR_USE_HAND_INTERACTIONS") != nullptr) {
+			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
+			hand_interactions_enabled_ = (val == "1" || val == "true" || val == "TRUE");
+        }
+#ifdef BUILD_WITH_LOGGING
+		log_debug("Hand tracking %s", (hand_tracking_enabled_ ? "enabled" : "disabled"));
+#endif
 	}
 
 	std::atomic<bool> ready = false;
 
-	bool offload_frames = false;
-	int sleep_time = -1;
-	bool hand_tracking_enabled_ = false;
+	bool offload_frames             = false;
+	int  sleep_time                 = -1;
+	bool hand_tracking_enabled_     = false;
+	bool palm_poses_enabled_        = false;
+	bool hand_interactions_enabled_ = false;
 
 	phonebook *pb;
-	const std::shared_ptr<switchboard> sb;
-	const std::shared_ptr<pose_prediction> sb_pose;
-	const std::shared_ptr<relative_clock> sb_clock;
-	std::shared_ptr<timewarp> sb_timewarp;
-	std::shared_ptr<vulkan::buffer_pool<fast_pose_type>> buffer_pool;
+	const std::shared_ptr<switchboard>      sb;
+	const std::shared_ptr<pose_prediction>  sb_pose;
+	const std::shared_ptr<relative_clock>   sb_clock;
+	std::shared_ptr<timewarp>               sb_timewarp;
+	std::shared_ptr<vulkan::buffer_pool<pose::fast_head_pose_type>> buffer_pool;
 
 	std::shared_ptr<display_provider> ds;
 	switchboard::writer<switchboard::event_wrapper<time_point>> _m_vsync;
 
-	// Hand tracking reader
-	switchboard::reader<openxr::hand_tracking_data> hand_tracking_reader_;
+	// Pose data readers — topics published by offload_rendering_server
+	switchboard::reader<pose::hand_joint_poses_pair>       hand_pose_reader_;
+	switchboard::reader<pose::hand_interaction_poses_pair> hand_interaction_reader_;
+	switchboard::reader<pose::palm_poses_pair>             palm_pose_reader_;
 
-	pose_type last_pose;
+	pose::head_pose_type last_pose;
 };
 
 static illixr_plugin *illixr_plugin_obj = nullptr;
@@ -133,31 +198,59 @@ illixr_monado_wait_for_init(void)
 	}
 }
 
-extern "C" struct xrt_pose
-illixr_read_pose()
+extern "C" struct xrt_space_relation
+illixr_read_head_relation()
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
 
-	if (!illixr_plugin_obj->sb_pose->fast_pose_reliable()) {
-		std::cerr << "Pose not reliable yet; returning best guess" << std::endl;
-	}
-	struct xrt_pose ret;
-	const fast_pose_type fast_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
-	const pose_type curr_pose = fast_pose.pose;
-	ret.orientation.x = curr_pose.orientation.x();
-	ret.orientation.y = curr_pose.orientation.y();
-	ret.orientation.z = curr_pose.orientation.z();
-	ret.orientation.w = curr_pose.orientation.w();
-	ret.position.x = curr_pose.position.x();
-	ret.position.y = curr_pose.position.y();
-	ret.position.z = curr_pose.position.z();
+	struct xrt_space_relation relation = {};
 
-	return ret;
+	const pose::fast_head_pose_type fast_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
+	const pose::head_pose_type& curr_pose     = fast_pose.pose;
+
+	// Pose
+	relation.pose.orientation.x = curr_pose.orientation.x();
+	relation.pose.orientation.y = curr_pose.orientation.y();
+	relation.pose.orientation.z = curr_pose.orientation.z();
+	relation.pose.orientation.w = curr_pose.orientation.w();
+	relation.pose.position.x    = curr_pose.position.x();
+	relation.pose.position.y    = curr_pose.position.y();
+	relation.pose.position.z    = curr_pose.position.z();
+
+	// Velocities — only written when the corresponding validity flag is set
+	if (curr_pose.linear_velocity_valid) {
+		relation.linear_velocity.x = curr_pose.linear_velocity.x();
+		relation.linear_velocity.y = curr_pose.linear_velocity.y();
+		relation.linear_velocity.z = curr_pose.linear_velocity.z();
+	}
+	if (curr_pose.angular_velocity_valid) {
+		relation.angular_velocity.x = curr_pose.angular_velocity.x();
+		relation.angular_velocity.y = curr_pose.angular_velocity.y();
+		relation.angular_velocity.z = curr_pose.angular_velocity.z();
+	}
+
+	// Pose is always considered valid and tracked when the pose prediction
+	// interface has data; velocity flags are conditional on the source.
+	enum xrt_space_relation_flags flags = (enum xrt_space_relation_flags)(
+	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT   |
+	    XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+	    XRT_SPACE_RELATION_POSITION_VALID_BIT       |
+	    XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+
+	if (curr_pose.linear_velocity_valid) {
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT);
+	}
+	if (curr_pose.angular_velocity_valid) {
+		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
+	}
+
+	relation.relation_flags = flags;
+	return relation;
 }
 
 /*
  *
- * Hand-tracking functions
+ * Hand-joint tracking functions
  *
  */
 
@@ -174,7 +267,7 @@ illixr_hand_tracking_supported(void)
  * @brief Convert ILLIXR hand_joint_pose to illixr_hand_joint
  */
 static void
-convert_joint(const openxr::hand_joint_pose &src, struct illixr_hand_joint *dst)
+convert_joint(const pose::hand_joint_pose &src, struct illixr_hand_joint *dst)
 {
 	dst->position.x = src.position.x();
 	dst->position.y = src.position.y();
@@ -202,46 +295,14 @@ convert_joint(const openxr::hand_joint_pose &src, struct illixr_hand_joint *dst)
  * @brief Convert ILLIXR single_hand_state to illixr_single_hand
  */
 static void
-convert_single_hand(const openxr::single_hand_state &src, struct illixr_single_hand *dst)
+convert_single_hand(const pose::hand_joint_poses &src, struct illixr_single_hand *dst)
 {
-	dst->is_active = src.is_active;
+	dst->is_active = src.hand_tracked;
 	dst->confidence = src.confidence;
 
-	for (size_t i = 0; i < openxr::HAND_JOINT_COUNT && i < ILLIXR_HAND_JOINT_COUNT; ++i) {
+	for (size_t i = 0; i < pose::HAND_JOINT_COUNT; ++i) {
 		convert_joint(src.joints[i], &dst->joints[i]);
 	}
-}
-
-extern "C" bool
-illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data)
-{
-	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-	assert(out_data && "out_data must not be null.");
-
-	if (!illixr_plugin_obj->hand_tracking_enabled_) {
-		out_data->valid = false;
-		return false;
-	}
-
-	// Try to get hand tracking data from the switchboard
-	std::shared_ptr<const openxr::hand_tracking_data> hand_data =
-	    illixr_plugin_obj->hand_tracking_reader_.get_ro_nullable();
-
-	if (!hand_data || !hand_data->has_any_tracking()) {
-		out_data->valid = false;
-		out_data->left_hand.is_active = false;
-		out_data->right_hand.is_active = false;
-		return false;
-	}
-
-	// Convert left hand
-	convert_single_hand(hand_data->left_hand, &out_data->left_hand);
-
-	// Convert right hand
-	convert_single_hand(hand_data->right_hand, &out_data->right_hand);
-
-	out_data->valid = true;
-	return true;
 }
 
 extern "C" bool
@@ -257,17 +318,17 @@ illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand)
 	}
 
 	// Try to get hand tracking data from the switchboard
-	std::shared_ptr<const openxr::hand_tracking_data> hand_data =
-	    illixr_plugin_obj->hand_tracking_reader_.get_ro_nullable();
+	std::shared_ptr<const pose::hand_joint_poses_pair> hand_data =
+	    illixr_plugin_obj->hand_pose_reader_.get_ro_nullable();
 
 	if (!hand_data) {
 		out_hand->is_active = false;
 		return false;
 	}
 
-	const openxr::single_hand_state &src = (hand == 0) ? hand_data->left_hand : hand_data->right_hand;
+	const pose::hand_joint_poses &src = (hand == 0) ? hand_data->hands.at(pose::LEFT) : hand_data->hands.at(pose::RIGHT);
 
-	if (!src.is_active) {
+	if (!src.is_tracked()) {
 		out_hand->is_active = false;
 		return false;
 	}
@@ -278,10 +339,109 @@ illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand)
 
 /*
  *
- * Vulkan display service functions
+ * Palm-pose functions
  *
  */
 
+extern "C" bool
+illixr_read_palm_pose(int hand, struct illixr_palm_pose *out_pose)
+{
+	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
+	assert(out_pose && "out_pose must not be null.");
+	assert((hand == 0 || hand == 1) && "hand must be 0 (left) or 1 (right).");
+
+	out_pose->valid = false;
+
+	if (!illixr_plugin_obj->hand_tracking_enabled_) {
+		return false;
+	}
+
+	std::shared_ptr<const pose::palm_poses_pair> palm_data =
+	    illixr_plugin_obj->palm_pose_reader_.get_ro_nullable();
+
+	if (!palm_data || !palm_data->is_valid()) {
+		return false;
+	}
+
+	const ILLIXR::data_format::pose::hand side =
+	    (hand == 0) ? ILLIXR::data_format::pose::LEFT : ILLIXR::data_format::pose::RIGHT;
+
+	const pose::palm_pose_data &src = palm_data->hands.at(side);
+
+	if (!src.valid) {
+		return false;
+	}
+
+	out_pose->position.x    = src.position.x();
+	out_pose->position.y    = src.position.y();
+	out_pose->position.z    = src.position.z();
+	out_pose->orientation.x = src.orientation.x();
+	out_pose->orientation.y = src.orientation.y();
+	out_pose->orientation.z = src.orientation.z();
+	out_pose->orientation.w = src.orientation.w();
+	out_pose->valid         = true;
+	return true;
+}
+
+/*
+ *
+ * Hand-interaction pose functions
+ *
+ */
+extern "C" bool
+illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_data)
+{
+	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
+	assert(out_data && "out_data must not be null.");
+	assert((hand == 0 || hand == 1) && "hand must be 0 (left) or 1 (right).");
+
+	out_data->valid = false;
+
+	if (!illixr_plugin_obj->hand_tracking_enabled_) {
+		return false;
+	}
+
+	std::shared_ptr<const pose::hand_interaction_poses_pair> interaction_data =
+	    illixr_plugin_obj->hand_interaction_reader_.get_ro_nullable();
+
+	if (!interaction_data || !interaction_data->is_valid()) {
+		return false;
+	}
+
+	const ILLIXR::data_format::pose::hand side =
+	    (hand == 0) ? ILLIXR::data_format::pose::LEFT : ILLIXR::data_format::pose::RIGHT;
+
+	const pose::hand_interaction_poses &src = interaction_data->hands.at(side);
+
+	// Helper to copy one interaction pose
+	auto copy_pose = [](const pose::hand_interaction_pose_data &s,
+	                    struct illixr_interaction_pose *d) {
+		d->position.x    = s.position.x();
+		d->position.y    = s.position.y();
+		d->position.z    = s.position.z();
+		d->orientation.x = s.orientation.x();
+		d->orientation.y = s.orientation.y();
+		d->orientation.z = s.orientation.z();
+		d->orientation.w = s.orientation.w();
+		d->value         = s.value;
+		d->ready         = s.ready;
+		d->valid         = s.valid;
+	};
+
+	copy_pose(src.at(pose::AIM),   &out_data->poses[ILLIXR_INTERACTION_AIM]);
+	copy_pose(src.at(pose::GRIP),  &out_data->poses[ILLIXR_INTERACTION_GRIP]);
+	copy_pose(src.at(pose::PINCH), &out_data->poses[ILLIXR_INTERACTION_PINCH]);
+	copy_pose(src.at(pose::POKE),  &out_data->poses[ILLIXR_INTERACTION_POKE]);
+
+	out_data->valid = src.is_valid();
+	return out_data->valid;
+}
+
+/*
+ *
+ * Vulkan display service functions
+ *
+ */
 
 extern "C" void
 illixr_initialize_vulkan_display_service(VkInstance instance,
@@ -292,23 +452,20 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
                                          struct u_string_list *enabled_instance_extensions,
                                          struct u_string_list *enabled_device_extensions)
 {
-	printf("Initializing vulkan display service\n");
 	auto ds = std::make_shared<monado_vulkan_display_provider>();
 	ds->vk_instance_ = instance;
 	ds->vk_physical_device_ = physical_device;
 	ds->vk_device_ = device;
 	ds->queues_[queue::GRAPHICS] = {queue, queue_family_index, queue::GRAPHICS, std::make_shared<std::mutex>()};
 
-	const char *const *exts = u_string_list_get_data(enabled_instance_extensions);
-	uint32_t ext_count = u_string_list_get_size(enabled_instance_extensions);
-
+	const char *const *exts      = u_string_list_get_data(enabled_instance_extensions);
+	uint32_t           ext_count = u_string_list_get_size(enabled_instance_extensions);
 	for (uint32_t i = 0; i < ext_count; i++) {
 		ds->enabled_instance_extensions_.push_back(exts[i]);
 	}
 
-	const char *const *dev_exts = u_string_list_get_data(enabled_device_extensions);
-	uint32_t dev_ext_count = u_string_list_get_size(enabled_device_extensions);
-
+	const char *const *dev_exts      = u_string_list_get_data(enabled_device_extensions);
+	uint32_t           dev_ext_count = u_string_list_get_size(enabled_device_extensions);
 	for (uint32_t i = 0; i < dev_ext_count; i++) {
 		ds->enabled_device_extensions_.push_back(dev_exts[i]);
 	}
@@ -335,59 +492,26 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
                            VkDeviceMemory *device_memory,
                            VkDeviceSize *size,
                            VkDeviceSize *offset,
-                           uint32_t num_buffers_per_eye)
+                           uint32_t num_buffers_per_eye,
+                           struct illixr_framebuffer *framebuffer_array)
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-	std::cout << PREFIX << "Initializing timewarp" << std::endl;
-	// Num buffers per eye should be twice as large if we're passing in depth.
-	// std::vector<VkImageView> left_eye_views(buffer_pool, buffer_pool + num_buffers_per_eye);
-	// std::vector<VkImageView> right_eye_views(buffer_pool + num_buffers_per_eye, buffer_pool + 2 *
-	// num_buffers_per_eye); std::array<std::vector<VkImageView>, 2> eye_views = {left_eye_views, right_eye_views};
-	// // for (int eye = 0; eye < 2; eye++) {
-	// // 	for (int buffer = 0; buffer < num_buffers_per_eye; buffer++) {
-	// // 		assert(eye_views[eye][buffer] != VK_NULL_HANDLE && "Eye buffer image view is a null handle!");
-	// // 	}
-	// // }
-	// illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, std::move(eye_views), false);
 
-	// Depth images are interleaved with the color images, e.g.
-	// left image 0, left depth 0, right image 0, right depth 0
-	std::vector<std::array<vulkan::vk_image, 2>> image_pool;
-	for (auto i = 0; i < num_buffers_per_eye; i++) {
-		std::array<vulkan::vk_image, 2> image_arr;
-		for (auto eye = 0; eye < 2; eye++) {
-			image_arr[eye].image = image[i * 4 + eye * 2];
-			image_arr[eye].image_view = image_view[i * 4 + eye * 2];
-			image_arr[eye].allocation_info.size = size[i * 4 + eye * 2];
-			image_arr[eye].allocation_info.offset = offset[i * 4 + eye * 2];
-			image_arr[eye].allocation_info.deviceMemory = device_memory[i * 4 + eye * 2];
-			image_arr[eye].image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-			image_arr[eye].image_info.format = VK_FORMAT_B8G8R8A8_UNORM;
-			image_arr[eye].image_info.extent = {extent.width, extent.height, 1};
-		}
-		image_pool.push_back(image_arr);
-	}
+	// Create empty buffer pool - images will be imported later
+	std::vector<std::array<vulkan::vk_image, 2>> image_pool(num_buffers_per_eye);
+	std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool(num_buffers_per_eye);
 
-	std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool;
-	for (auto i = 0; i < num_buffers_per_eye; i++) {
-		std::array<vulkan::vk_image, 2> image_arr;
-		for (auto eye = 0; eye < 2; eye++) {
-			image_arr[eye].image = image[i * 4 + eye * 2 + 1];
-			image_arr[eye].image_view = image_view[i * 4 + eye * 2 + 1];
-			image_arr[eye].allocation_info.size = size[i * 4 + eye * 2 + 1];
-			image_arr[eye].allocation_info.offset = offset[i * 4 + eye * 2 + 1];
-			image_arr[eye].allocation_info.deviceMemory = device_memory[i * 4 + eye * 2 + 1];
-			image_arr[eye].image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-			image_arr[eye].image_info.format = VK_FORMAT_B8G8R8A8_UNORM;
-			image_arr[eye].image_info.extent = {extent.width, extent.height, 1};
-		}
-		depth_image_pool.push_back(image_arr);
-	}
-
-	auto buffer_pool = std::make_shared<vulkan::buffer_pool<fast_pose_type>>(image_pool, depth_image_pool);
+	auto buffer_pool = std::make_shared<vulkan::buffer_pool<pose::fast_head_pose_type>>(image_pool, depth_image_pool);
 	illixr_plugin_obj->buffer_pool = buffer_pool;
-	illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, std::move(buffer_pool), true);
-	std::cout << PREFIX << "Initialized timewarp" << std::endl;
+
+	// Pass EVERYTHING through setup() - the only communication channel to the plugin
+	illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, buffer_pool, true,
+	                                      framebuffer_array, // Plugin stores this pointer
+	                                      extent             // Plugin uses this for encoder dimensions
+	);
+
+	fprintf(stderr, "[ILLIXR] Timewarp setup complete - extent=%ux%u, fb_array=%p\n", extent.width, extent.height,
+	        (void *)framebuffer_array);	
 }
 
 extern "C" int8_t
@@ -401,13 +525,14 @@ extern "C" void
 illixr_src_release(int8_t buffer_ind, struct xrt_pose l_pose, struct xrt_pose r_pose)
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
-	pose_type pose{time_point{},
-	               Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2,
-	                               (l_pose.position.y + r_pose.position.y) / 2,
-	                               (l_pose.position.z + r_pose.position.z) / 2},
-	               Eigen::Quaternionf{(l_pose.orientation.w), (l_pose.orientation.x), (l_pose.orientation.y),
-	                                  (l_pose.orientation.z)}};
-	illixr_plugin_obj->buffer_pool->src_release_image(buffer_ind, fast_pose_type{pose, {}, {}});
+
+	pose::head_pose_type pose{time_point{},
+				  Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
+						  (l_pose.position.y + r_pose.position.y) / 2.f,
+						  (l_pose.position.z + r_pose.position.z) / 2.f},
+				  Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
+						     l_pose.orientation.y, l_pose.orientation.z}};
+	illixr_plugin_obj->buffer_pool->src_release_image(buffer_ind, pose::fast_head_pose_type{pose, {}, {}});
 }
 
 extern "C" bool
@@ -430,12 +555,12 @@ illixr_tw_update_uniforms(xrt_pose l_pose, xrt_pose r_pose)
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
 
 	if (!illixr_plugin_obj->offload_frames) {
-		pose_type pose{time_point{},
-		               Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2,
-		                               (l_pose.position.y + r_pose.position.y) / 2,
-		                               (l_pose.position.z + r_pose.position.z) / 2},
-		               Eigen::Quaternionf{(l_pose.orientation.w), (l_pose.orientation.x),
-		                                  (l_pose.orientation.y), (l_pose.orientation.z)}};
+		pose::head_pose_type pose{time_point{},
+					  Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
+							  (l_pose.position.y + r_pose.position.y) / 2.f,
+							  (l_pose.position.z + r_pose.position.z) / 2.f},
+					  Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
+							     l_pose.orientation.y, l_pose.orientation.z}};
 		illixr_plugin_obj->last_pose = pose;
 	}
 }

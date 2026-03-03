@@ -54,8 +54,33 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 		return 0;
 	}
 
+	// HMD device — must be created first; it launches the ILLIXR runtime
+	// and registers the monado plugin that owns the switchboard readers.
 	out_xdevs[0] = illixr_hmd_create(illixr_path, illixr_comp);
-	return 1;
+	if (out_xdevs[0] == NULL) {
+		return 0;
+	}
+
+	// Hand interaction devices — created after the HMD so the runtime is
+	// already running and the switchboard topics are available.
+	out_xdevs[1] = illixr_hand_device_create(0, out_xdevs[0]->tracking_origin); // left
+	out_xdevs[2] = illixr_hand_device_create(1, out_xdevs[0]->tracking_origin); // right
+
+	if (out_xdevs[1] == NULL || out_xdevs[2] == NULL) {
+		// Non-fatal: HMD still works without hand interaction devices.
+		// Clean up whichever device was created and return only the HMD.
+		if (out_xdevs[1] != NULL) {
+			out_xdevs[1]->destroy(out_xdevs[1]);
+			out_xdevs[1] = NULL;
+		}
+		if (out_xdevs[2] != NULL) {
+			out_xdevs[2]->destroy(out_xdevs[2]);
+			out_xdevs[2] = NULL;
+		}
+		return 1;
+	}
+
+	return 3;
 }
 
 struct xrt_auto_prober *
