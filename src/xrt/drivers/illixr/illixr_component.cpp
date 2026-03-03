@@ -45,7 +45,7 @@
 
 #include <cstdlib>
 // Debug file logger - static global
-/*
+#ifdef BUILD_WITH_LOGGING
 static FILE *g_debug_log3 = NULL;
 
 static void
@@ -87,7 +87,7 @@ log_debug(const char *format, ...)
 		fflush(g_debug_log3); // CRITICAL - force write immediately
 	}
 }
-*/
+#endif
 
 using namespace ILLIXR;
 using namespace ILLIXR::vulkan;
@@ -149,8 +149,9 @@ public:
 			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
 			hand_interactions_enabled_ = (val == "1" || val == "true" || val == "TRUE");
         }
-
-		//log_debug("Hand tracking %s", (hand_tracking_enabled_ ? "enabled" : "disabled"));
+#ifdef BUILD_WITH_LOGGING
+		log_debug("Hand tracking %s", (hand_tracking_enabled_ ? "enabled" : "disabled"));
+#endif
 	}
 
 	std::atomic<bool> ready = false;
@@ -171,7 +172,7 @@ public:
 	std::shared_ptr<display_provider> ds;
 	switchboard::writer<switchboard::event_wrapper<time_point>> _m_vsync;
 
-	// Pose data readers — topics published by offload_rendering_server
+	// Pose data readers â€” topics published by offload_rendering_server
 	switchboard::reader<pose::hand_joint_poses_pair>       hand_pose_reader_;
 	switchboard::reader<pose::hand_interaction_poses_pair> hand_interaction_reader_;
 	switchboard::reader<pose::palm_poses_pair>             palm_pose_reader_;
@@ -216,7 +217,7 @@ illixr_read_head_relation()
 	relation.pose.position.y    = curr_pose.position.y();
 	relation.pose.position.z    = curr_pose.position.z();
 
-	// Velocities — only written when the corresponding validity flag is set
+	// Velocities â€” only written when the corresponding validity flag is set
 	if (curr_pose.linear_velocity_valid) {
 		relation.linear_velocity.x = curr_pose.linear_velocity.x();
 		relation.linear_velocity.y = curr_pose.linear_velocity.y();
@@ -451,7 +452,6 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
                                          struct u_string_list *enabled_instance_extensions,
                                          struct u_string_list *enabled_device_extensions)
 {
-	//log_debug("Initializing vulkan display service\n");
 	auto ds = std::make_shared<monado_vulkan_display_provider>();
 	ds->vk_instance_ = instance;
 	ds->vk_physical_device_ = physical_device;
@@ -512,7 +512,6 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
 
 	fprintf(stderr, "[ILLIXR] Timewarp setup complete - extent=%ux%u, fb_array=%p\n", extent.width, extent.height,
 	        (void *)framebuffer_array);	
-	//log_debug("Initialized timewarp");
 }
 
 extern "C" int8_t

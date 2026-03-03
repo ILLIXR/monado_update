@@ -56,7 +56,7 @@
  */
 
 // Debug file logger - static global
-/*
+#ifdef BUILD_WITH_LOGGING
 static FILE *g_debug_log = NULL;
 
 static void
@@ -97,8 +97,8 @@ ht_log(const char *format, ...)
 		fprintf(g_debug_log, "\n");
 		fflush(g_debug_log); // CRITICAL - force write immediately
 	}
-}*/
-
+}
+#endif
 struct illixr_hmd
 {
 	struct xrt_device base;
@@ -306,11 +306,15 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 	(void)xdev;
 	(void)desired_timestamp_ns;
 
-	//ht_log("Hand tracking called for input %d", name);
+#ifdef BUILD_WITH_LOGGING
+	ht_log("Hand tracking called for input %d", name);
+#endif
 
 	// Check if hand tracking is supported
 	if (!illixr_hand_tracking_supported()) {
-		//ht_log("Hand tracking not supported");
+#ifdef BUILD_WITH_LOGGING
+		ht_log("Hand tracking not supported");
+#endif
 		out_value->is_active = false;
 		return;
 	}
@@ -322,7 +326,9 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 	} else if (name == XRT_INPUT_GENERIC_HAND_TRACKING_RIGHT) {
 		hand_index = 1;
 	} else {
-		//ht_log("Unknown hand tracking input name: %d", name);
+#ifdef BUILD_WITH_LOGGING
+		ht_log("Unknown hand tracking input name: %d", name);
+#endif
 		out_value->is_active = false;
 		return;
 	}
@@ -330,7 +336,9 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 	// Fetch hand data from ILLIXR switchboard
 	struct illixr_single_hand hand_data;
 	if (!illixr_read_single_hand(hand_index, &hand_data)) {
-		//ht_log("illixr_read_single_hand returned false for hand %d", hand_index);
+#ifdef BUILD_WITH_LOGGING
+		ht_log("illixr_read_single_hand returned false for hand %d", hand_index);
+#endif
 		out_value->is_active = false;
 		return;
 	}
@@ -339,7 +347,9 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 	out_value->is_active = hand_data.is_active;
 
 	if (!hand_data.is_active) {
-		//ht_log("Hand %d not active", hand_index);
+#ifdef BUILD_WITH_LOGGING
+		ht_log("Hand %d not active", hand_index);
+#endif
 		return;
 	}
 
@@ -351,10 +361,11 @@ illixr_hmd_get_hand_tracking(struct xrt_device *xdev,
 	}
 	// Return current time
 	*out_timestamp_ns = (int64_t)get_timestamp_ns();
-
-	//ht_log("Hand %d tracking data returned: wrist=(%.4f, %.4f, %.4f) flags=0x%x", hand_index,
-	//       hand_data.joints[1].position.x, hand_data.joints[1].position.y, hand_data.joints[1].position.z,
-	//       hand_data.joints[1].location_flags);
+#ifdef BUILD_WITH_LOGGING
+	ht_log("Hand %d tracking data returned: wrist=(%.4f, %.4f, %.4f) flags=0x%x", hand_index,
+	       hand_data.joints[1].position.x, hand_data.joints[1].position.y, hand_data.joints[1].position.z,
+	       hand_data.joints[1].location_flags);
+#endif
 }
 
 static void
@@ -725,11 +736,17 @@ illixr_hand_device_get_tracked_pose(struct xrt_device *xdev,
 	struct illixr_hand_interaction_data data = {};
 	if (!illixr_read_hand_interaction(hd->hand, &data)) {
 		out_relation->relation_flags = (enum xrt_space_relation_flags)0;
+#ifdef BUILD_WITH_LOGGING
+		ht_log("No hand interaction data");
+#endif
 		return XRT_SUCCESS;
 	}
 
 	const struct illixr_interaction_pose &src = data.poses[pose_slot];
 	if (!src.valid) {
+#ifdef BUILD_WITH_LOGGING
+		ht_log("Hand interaction data not valid");
+#endif
 		out_relation->relation_flags = (enum xrt_space_relation_flags)0;
 		return XRT_SUCCESS;
 	}
@@ -742,6 +759,9 @@ illixr_hand_device_get_tracked_pose(struct xrt_device *xdev,
 	out_relation->pose.orientation.z = src.orientation.z;
 	out_relation->pose.orientation.w = src.orientation.w;
 	out_relation->relation_flags     = full_flags;
+#ifdef BUILD_WITH_LOGGING
+	ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x", src.position.x, src.position.y, src.position.z, full_flags);
+#endif
 	return XRT_SUCCESS;
 }
 
