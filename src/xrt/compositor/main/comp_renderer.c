@@ -160,6 +160,7 @@ struct comp_renderer
 	VkDescriptorSetLayout depth_to_rg_desc_layout;
 	VkDescriptorPool depth_to_rg_desc_pool;
 	VkDescriptorSet depth_to_rg_desc_sets[2 * OFFLOAD_BUFFER_POOL_SIZE];
+	VkSampler depth_sampler;
 
 	// Color downsampled images for encoding (12 total: 6 buffers × 2 eyes)
 	struct {
@@ -720,6 +721,31 @@ static void create_depth_to_rg_pipeline(struct comp_renderer* r) {
 
 	vk->vkDestroyShaderModule(vk->device, shader_module, NULL);
 
+	// Create sampler for depth input
+	VkSamplerCreateInfo sampler_info = {
+	    .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+	    .magFilter = VK_FILTER_NEAREST, // Nearest for depth (no interpolation)
+	    .minFilter = VK_FILTER_NEAREST,
+	    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+	    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .mipLodBias = 0.0f,
+	    .anisotropyEnable = VK_FALSE,
+	    .maxAnisotropy = 1.0f,
+	    .compareEnable = VK_FALSE,
+	    .compareOp = VK_COMPARE_OP_ALWAYS,
+	    .minLod = 0.0f,
+	    .maxLod = 0.0f,
+	    .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+	    .unnormalizedCoordinates = VK_FALSE,
+	};
+
+	ret = vk->vkCreateSampler(vk->device, &sampler_info, NULL, &r->depth_sampler);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(r->c, "Failed to create depth sampler: %d", ret);
+		return;
+	}
 	COMP_INFO(r->c, "Created depth-to-RG conversion pipeline");
 }
 
@@ -769,7 +795,7 @@ static void create_depth_to_rg_descriptors(struct comp_renderer* r) {
 	// Update descriptor sets
 	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
 		VkDescriptorImageInfo depth_input_info = {
-		    .sampler = VK_NULL_HANDLE,  // Use immutable sampler or create one
+		    .sampler = r->depth_sampler,                      // Use immutable sampler or create one
 		    .imageView = r->illixr_depth_downsampled[i].view,  // Depth input
 		    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		};
@@ -800,6 +826,10 @@ static void create_depth_to_rg_descriptors(struct comp_renderer* r) {
 		    },
 		};
 
+		if (r->illixr_depth_downsampled[i].view == VK_NULL_HANDLE ||
+		    r->illixr_depth_rg[i].view == VK_NULL_HANDLE) {
+			continue; // Skip invalid views
+		}
 		vk->vkUpdateDescriptorSets(vk->device, 2, writes, 0, NULL);
 	}
 }
@@ -818,6 +848,7 @@ renderer_init(struct comp_renderer *r, struct comp_compositor *c, VkExtent2D scr
 	r->acquired_buffer = -1;
 	r->fenced_buffer = -1;
 	r->rtr_array = NULL;
+	r->illixr_downsampled_created = false;
 
 	// Shared render pass between all scratch images.
 	render_gfx_render_pass_init(                   //
@@ -1074,6 +1105,12 @@ renderer_fini(struct comp_renderer *r)
 {
 	struct vk_bundle *vk = &r->c->base.vk;
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (r->depth_sampler != VK_NULL_HANDLE) {
+		vk->vkDestroySampler(vk->device, r->depth_sampler, NULL);
+		r->depth_sampler = VK_NULL_HANDLE;
+	}
+#endif
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
 
@@ -1904,6 +1941,8 @@ dispatch_graphics(struct comp_renderer *r,
 				// Create depth-to-RG pipeline and descriptors
 				create_depth_to_rg_pipeline(r);
 				create_depth_to_rg_descriptors(r);
+
+				r->illixr_downsampled_created = true;
 			}
 			// Copy both eyes from scratch images to buffer pool
 			for (uint32_t eye = 0; eye < 2; eye++) {
@@ -2138,7 +2177,7 @@ dispatch_graphics(struct comp_renderer *r,
 
 							// Calculate buffer_idx for logging
 							uint32_t buffer_idx = fb_idx / 2;
-							COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d (D16→RG)", buffer_idx, eye);
+							//COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d (D16→RG)", buffer_idx, eye);
 						}
 					}
 				} else {
