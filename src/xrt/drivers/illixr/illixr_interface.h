@@ -49,7 +49,7 @@ illixr_hmd_create(const char *path, const char *comp);
  * @ingroup drv_illixr
  */
 struct xrt_device *
-illixr_hand_device_create(int hand);
+illixr_hand_device_create(int hand, struct xrt_tracking_origin *origin);
 
 /*!
  * @dir drivers/illixr

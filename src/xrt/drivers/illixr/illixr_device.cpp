@@ -766,7 +766,7 @@ illixr_hand_device_get_tracked_pose(struct xrt_device *xdev,
 }
 
 extern "C" struct xrt_device *
-illixr_hand_device_create(int hand)
+illixr_hand_device_create(int hand, struct xrt_tracking_origin *origin)
 {
 	assert(hand == 0 || hand == 1);
 
@@ -786,6 +786,12 @@ illixr_hand_device_create(int hand)
 	hd->base.device_type = (hand == 0)
 	                           ? XRT_DEVICE_TYPE_LEFT_HAND_CONTROLLER
 	                           : XRT_DEVICE_TYPE_RIGHT_HAND_CONTROLLER;
+
+	// Share the HMD's tracking origin so Monado applies the same
+	// LOCAL-space transform to interaction poses as it does to the head.
+	// Without this, Monado uses a garbage or identity origin and the
+	// world-space aim pose gets a wrong additional offset applied.
+	hd->base.tracking_origin = origin;
 
 	hd->base.orientation_tracking_supported = true;
 	hd->base.position_tracking_supported    = true;
