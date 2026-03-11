@@ -49,6 +49,10 @@
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
 #include "shaders/depth16_to_rg_spirv.h"
+
+#define MOTION_VECTOR_WIDTH 432
+#define MOTION_VECTOR_HEIGHT 432
+
 #endif
 
 /*
@@ -183,6 +187,17 @@ struct comp_renderer
 		uint32_t width;
 		uint32_t height;
 	} illixr_depth_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+	// Motion vector images (RGBA16F) copied from Unity's sentinel quad layer
+	struct
+	{
+		VkImage image;
+		VkDeviceMemory memory;
+		VkImageView view;
+		VkDeviceSize memory_size;
+		uint32_t width;
+		uint32_t height;
+	} illixr_motion_vectors[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
 	// RG-encoded depth images for encoder (12 total: 6 buffers × 2 eyes)
 	struct {
@@ -1110,6 +1125,21 @@ renderer_fini(struct comp_renderer *r)
 		vk->vkDestroySampler(vk->device, r->depth_sampler, NULL);
 		r->depth_sampler = VK_NULL_HANDLE;
 	}
+
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		if (r->illixr_motion_vectors[i].view != VK_NULL_HANDLE) {
+			vk->vkDestroyImageView(vk->device, r->illixr_motion_vectors[i].view, NULL);
+			r->illixr_motion_vectors[i].view = VK_NULL_HANDLE;
+		}
+		if (r->illixr_motion_vectors[i].image != VK_NULL_HANDLE) {
+			vk->vkDestroyImage(vk->device, r->illixr_motion_vectors[i].image, NULL);
+			r->illixr_motion_vectors[i].image = VK_NULL_HANDLE;
+		}
+		if (r->illixr_motion_vectors[i].memory != VK_NULL_HANDLE) {
+			vk->vkFreeMemory(vk->device, r->illixr_motion_vectors[i].memory, NULL);
+			r->illixr_motion_vectors[i].memory = VK_NULL_HANDLE;
+		}
+	}
 #endif
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
@@ -1423,6 +1453,109 @@ static void create_illixr_depth_rg_images(struct comp_renderer* r, uint32_t widt
 }
 
 static void
+create_illixr_motion_vector_images(struct comp_renderer *r, uint32_t width, uint32_t height)
+{
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+
+	COMP_INFO(c, "Creating ILLIXR motion vector images: %ux%u", width, height);
+
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage =
+		        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VkExternalMemoryImageCreateInfo external_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+#endif
+		};
+		image_info.pNext = &external_info;
+
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL, &r->illixr_motion_vectors[i].image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create motion vector image %u: %d", i, ret);
+			return;
+		}
+
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, r->illixr_motion_vectors[i].image, &mem_reqs);
+
+		uint32_t memory_type_index;
+		if (!vk_get_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		                        &memory_type_index)) {
+			COMP_ERROR(c, "No suitable memory type for motion vector image %u", i);
+			return;
+		}
+
+		VkExportMemoryAllocateInfo export_alloc = {
+		    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+#endif
+		};
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .pNext = &export_alloc,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex = memory_type_index,
+		};
+
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &r->illixr_motion_vectors[i].memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to allocate motion vector memory %u: %d", i, ret);
+			return;
+		}
+
+		ret = vk->vkBindImageMemory(vk->device, r->illixr_motion_vectors[i].image,
+		                            r->illixr_motion_vectors[i].memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to bind motion vector memory %u: %d", i, ret);
+			return;
+		}
+
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = r->illixr_motion_vectors[i].image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+		    .subresourceRange =
+		        {
+		            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		            .levelCount = 1,
+		            .layerCount = 1,
+		        },
+		};
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL, &r->illixr_motion_vectors[i].view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create motion vector image view %u: %d", i, ret);
+			return;
+		}
+
+		r->illixr_motion_vectors[i].memory_size = mem_reqs.size;
+		r->illixr_motion_vectors[i].width = width;
+		r->illixr_motion_vectors[i].height = height;
+	}
+	COMP_INFO(c, "Created %d motion vector images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+}
+
+static void
 create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
 {
 	struct comp_compositor *c = r->c;
@@ -1717,6 +1850,30 @@ dispatch_graphics(struct comp_renderer *r,
 		}
 	}
 
+	// ILLIXR: Scan for motion vector sentinel quad layer (position.z == -9999.0f)
+	// and build a filtered layer list that excludes it from display composition.
+	const struct comp_layer *mv_layer = NULL;
+
+	// Stack-allocate a filtered copy — XRT_MAX_LAYERS is typically 16.
+	const struct comp_layer filtered_layers_storage[XRT_MAX_LAYERS];
+	const struct comp_layer *filtered_layers = layers;
+	uint32_t filtered_count = layer_count;
+
+	{
+		uint32_t n = 0;
+		for (uint32_t i = 0; i < layer_count; i++) {
+			if (layers[i].data.type == XRT_LAYER_QUAD && layers[i].data.quad.pose.position.z < -9998.0f) {
+				mv_layer = &layers[i]; // intercept, don't composite
+			} else {
+				((struct comp_layer *)filtered_layers_storage)[n++] = layers[i];
+			}
+		}
+		if (mv_layer != NULL) {
+			filtered_layers = filtered_layers_storage;
+			filtered_count = n;
+		}
+	}
+
 	if (proj_layer) {
 		struct xrt_pose left_pose;
 		struct xrt_pose right_pose;
@@ -1929,14 +2086,18 @@ dispatch_graphics(struct comp_renderer *r,
 				// Target encoding resolution (no scaling)
 				uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
 				uint32_t target_height = r->c->xdev->hmd->views[0].display.h_pixels;
+
+				uint32_t depth_width = MOTION_VECTOR_WIDTH;
+				uint32_t depth_height = MOTION_VECTOR_HEIGHT;
+
 				// Create color downsampled images
 				create_illixr_color_downsampled_images(r, target_width, target_height);
 
 				// Create depth downsampled images
-				create_illixr_depth_downsampled_images(r, target_width, target_height);
+				create_illixr_depth_downsampled_images(r, depth_width, depth_height);
 
 				// Create RG depth images
-				create_illixr_depth_rg_images(r, target_width, target_height);
+				create_illixr_depth_rg_images(r, depth_width, depth_height);
 
 				// Create depth-to-RG pipeline and descriptors
 				create_depth_to_rg_pipeline(r);
@@ -2175,6 +2336,14 @@ dispatch_graphics(struct comp_renderer *r,
 							r->illixr_framebuffers[fb_idx].depth_size = r->illixr_depth_rg[fb_idx].memory_size;
 							r->illixr_framebuffers[fb_idx].depth_offset = 0;
 
+							// Projection clip planes from XrCompositionLayerDepthInfoKHR.
+							// Unity writes these into the depth layer; forward them so the
+							// decoder can linearise depth values back into view-space metres.
+							r->illixr_framebuffers[fb_idx].near_z =
+							    proj_layer->data.depth.d[eye].near_z;
+							r->illixr_framebuffers[fb_idx].far_z =
+							    proj_layer->data.depth.d[eye].far_z;
+
 							// Calculate buffer_idx for logging
 							uint32_t buffer_idx = fb_idx / 2;
 							//COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d (D16→RG)", buffer_idx, eye);
@@ -2189,6 +2358,8 @@ dispatch_graphics(struct comp_renderer *r,
 					r->illixr_framebuffers[fb_idx].depth_offset = 0;
 					r->illixr_framebuffers[fb_idx].depth_extent.width = 0;
 					r->illixr_framebuffers[fb_idx].depth_extent.height = 0;
+					r->illixr_framebuffers[fb_idx].near_z = 0.0f;
+					r->illixr_framebuffers[fb_idx].far_z  = 0.0f;
 
 					if (eye == 0) { // Only log once
 						COMP_DEBUG(c, "ILLIXR: No depth layer (type=%d)",
@@ -2196,6 +2367,107 @@ dispatch_graphics(struct comp_renderer *r,
 					}
 				}
 
+				// ILLIXR: Extract motion vectors from sentinel quad layer
+				if (mv_layer != NULL) {
+					// The quad carries one swapchain for both eyes (sc_array[0])
+					// or per-eye (sc_array[0]=left, sc_array[1]=right).
+					// Unity submits one combined side-by-side swapchain — use sc_array[0].
+					struct xrt_swapchain *mv_sc = mv_layer->sc_array[0];
+					if (mv_sc != NULL) {
+						uint32_t mv_img_idx = mv_layer->data.quad.sub.array_index;
+						struct comp_swapchain *mv_comp_sc = (struct comp_swapchain *)mv_sc;
+
+						if (mv_img_idx < mv_sc->image_count) {
+							VkImage unity_mv_src =
+							    mv_comp_sc->vkic.images[mv_img_idx].handle;
+							uint32_t mv_w = mv_comp_sc->vkic.info.width / 2; // per-eye half
+							uint32_t mv_h = mv_comp_sc->vkic.info.height;
+
+							// Lazy-create motion vector images on first use
+							if (r->illixr_motion_vectors[0].image == VK_NULL_HANDLE) {
+								create_illixr_motion_vector_images(r, mv_w / 4, mv_h / 4);
+							}
+
+							// Transition Unity's swapchain image → TRANSFER_SRC
+							VkImageMemoryBarrier mv_barrier = {
+							    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+							    .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+							    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+							    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+							    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .image = unity_mv_src,
+							    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+							};
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &mv_barrier);
+
+							// Transition our motion vector image → TRANSFER_DST
+							mv_barrier.srcAccessMask = 0;
+							mv_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							mv_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+							mv_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							mv_barrier.image = r->illixr_motion_vectors[fb_idx].image;
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &mv_barrier);
+
+							// Copy the eye-half out of the side-by-side Unity texture
+							VkImageBlit mv_blit = {
+							    .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+							    .srcOffsets =
+							        {
+							            {(int32_t)(eye * (int32_t)mv_w), 0, 0},
+							            {(int32_t)(eye * (int32_t)mv_w) + (int32_t)mv_w,
+							             (int32_t)mv_h, 1},
+							        },
+							    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+							    .dstOffsets =
+							        {
+							            {0, 0, 0},
+							            {MOTION_VECTOR_WIDTH, MOTION_VECTOR_HEIGHT, 1},
+							        },
+							};
+
+							vk->vkCmdBlitImage(render->r->cmd, unity_mv_src,
+							                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							                   r->illixr_motion_vectors[fb_idx].image,
+							                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+							                   &mv_blit, VK_FILTER_LINEAR);
+
+							// Transition our motion vector image → SHADER_READ for
+							// downstream use
+							mv_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							mv_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+							mv_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							mv_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+							mv_barrier.image = r->illixr_motion_vectors[fb_idx].image;
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &mv_barrier);
+
+							// Populate framebuffer struct for downstream consumers
+							r->illixr_framebuffers[fb_idx].motion_vec_image =
+							    r->illixr_motion_vectors[fb_idx].image;
+							r->illixr_framebuffers[fb_idx].motion_vec_memory =
+							    r->illixr_motion_vectors[fb_idx].memory;
+							r->illixr_framebuffers[fb_idx].motion_vec_view =
+							    r->illixr_motion_vectors[fb_idx].view;
+							r->illixr_framebuffers[fb_idx].motion_vec_extent.width = mv_w;
+							r->illixr_framebuffers[fb_idx].motion_vec_extent.height = mv_h;
+							r->illixr_framebuffers[fb_idx].motion_vec_size =
+							    r->illixr_motion_vectors[fb_idx].memory_size;
+							r->illixr_framebuffers[fb_idx].motion_vec_offset = 0;
+						}
+					}
+				} else {
+					r->illixr_framebuffers[fb_idx].motion_vec_image = VK_NULL_HANDLE;
+				}
 				//COMP_DEBUG(c, "ILLIXR: Framebuffer %d - color=%p, depth=%p", fb_idx,
 				//           (void *)scratch_image->image,
 				//           (void *)r->illixr_framebuffers[fb_idx].depth_image);
