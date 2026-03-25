@@ -90,6 +90,93 @@
 #endif
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
+#include "../drivers/illixr/illixr_mv_shmem.h"
+
+// ---------------------------------------------------------------------------
+// ILLIXR motion vector swapchain registry
+//
+// The Unity client creates the MV swapchain via xrCreateSwapchain through the
+// IPC layer.  Monado's multi-compositor (comp_multi) processes the call and
+// creates an underlying comp_swapchain in the compositor process.  We capture
+// that comp_swapchain pointer here by wrapping the create_swapchain vtable
+// entry after comp_base_init sets it.
+//
+// Once g_illixr_mv_sc is populated, dispatch_graphics uses it directly
+// instead of searching through layer_accum (where the sentinel quad layer
+// was previously submitted but was filtered by comp_multi).
+// ---------------------------------------------------------------------------
+
+struct comp_swapchain *g_illixr_mv_sc = NULL;
+static HANDLE g_illixr_shmem_h = NULL;
+IllixrMvShmem *g_illixr_shmem = NULL;
+uint32_t g_illixr_last_seq = UINT32_MAX;
+
+// Open the shared memory written by IllixrXrHook.dll.
+void
+illixr_shmem_open(void)
+{
+	if (g_illixr_shmem != NULL)
+		return;
+
+	g_illixr_shmem_h = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, ILLIXR_MV_SHMEM_SIZE,
+	                                      ILLIXR_MV_SHMEM_NAME);
+	if (g_illixr_shmem_h == NULL) {
+		U_LOG_E("ILLIXR: shmem CreateFileMapping FAILED (error=%u)", +(unsigned)GetLastError());
+		return;
+	}
+
+	bool created_new = (GetLastError() != ERROR_ALREADY_EXISTS);
+	// Monado reads ring_index/frame_seq written by the DLL — needs write
+	// access on the mapping so the view can be mapped FILE_MAP_READ|WRITE.
+	g_illixr_shmem = (IllixrMvShmem *)MapViewOfFile(g_illixr_shmem_h, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+	                                                ILLIXR_MV_SHMEM_SIZE);
+
+	if (g_illixr_shmem == NULL) {
+		U_LOG_E("ILLIXR: shmem MapViewOfFile FAILED (error=%u)", (unsigned)GetLastError());
+		CloseHandle(g_illixr_shmem_h);
+		g_illixr_shmem_h = NULL;
+		return;
+	}
+	if (created_new) {
+		memset(g_illixr_shmem, 0, ILLIXR_MV_SHMEM_SIZE);
+		U_LOG_I("ILLIXR: shmem created (%s) at %p", ILLIXR_MV_SHMEM_NAME, (void *)g_illixr_shmem);
+	} else {
+		U_LOG_I("ILLIXR: shmem attached to existing (%s) at %p", ILLIXR_MV_SHMEM_NAME, (void *)g_illixr_shmem);
+	}
+}
+
+// Vtable wrapper: intercept create_swapchain to capture the MV swapchain.
+// The MV swapchain is identified by its side-by-side width (2 × per-eye width,
+// i.e. >= 4000 px wide) and single array layer.  Normal eye swapchains are
+// created before the feature initialises, so the first wide-format swapchain
+// seen here is reliably the MV one.
+typedef xrt_result_t (*pfn_create_swapchain_t)(struct xrt_compositor *,
+                                               const struct xrt_swapchain_create_info *,
+                                               struct xrt_swapchain **);
+
+static pfn_create_swapchain_t g_orig_create_swapchain = NULL;
+
+static xrt_result_t
+illixr_mv_create_swapchain(struct xrt_compositor *xc,
+                           const struct xrt_swapchain_create_info *info,
+                           struct xrt_swapchain **out_xsc)
+{
+	struct comp_compositor *c = comp_compositor(xc);
+	xrt_result_t ret = g_orig_create_swapchain(xc, info, out_xsc);
+	COMP_WARN(c, "ILLIXR create sc %d", (int)ret);
+	if (ret == XRT_SUCCESS && *out_xsc != NULL && g_illixr_mv_sc == NULL)
+	{
+		// Identify the MV swapchain: side-by-side width, single array layer.
+		if (info->width >= 4000 && info->array_size == 1)
+		{
+			g_illixr_mv_sc = (struct comp_swapchain *)*out_xsc;
+			COMP_WARN(c, "ILLIXR: Captured MV swapchain: %ux%u fmt=%u sc=%p", info->width, info->height,
+			        (unsigned)info->format, (void *)g_illixr_mv_sc);
+			illixr_shmem_open();
+		}
+	}
+	return ret;
+}
 #endif
 
 #define WINDOW_TITLE "Monado"
@@ -1026,6 +1113,15 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 
 	// Do this as early as possible.
 	comp_base_init(&c->base);
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	// Wrap create_swapchain to capture the ILLIXR motion vector swapchain
+	// when Unity creates it through the IPC layer.  Must happen after
+	// comp_base_init sets the vtable.
+	g_orig_create_swapchain = c->base.base.base.create_swapchain;
+	c->base.base.base.create_swapchain = illixr_mv_create_swapchain;
+	illixr_shmem_open();
+#endif
 
 	// Init the settings to default.
 	comp_settings_init(&c->settings, xdev);
