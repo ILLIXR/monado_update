@@ -385,6 +385,10 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 	add_library(
 		drv_illixr STATIC
 		illixr/illixr_device.cpp
+		illixr/illixr_hand_interaction_device.cpp
+		illixr/illixr_hand_tracking_device.cpp
+		illixr/illixr_device_common.cpp
+		illixr/illixr_device_common.h
 		illixr/illixr_interface.h
 		illixr/illixr_prober.c
 		illixr/illixr_component.cpp
