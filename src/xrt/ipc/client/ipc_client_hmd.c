@@ -215,26 +215,7 @@ ipc_client_hmd_get_view_poses(struct xrt_device *xdev,
 		assert(false && !"Too large view_count!");
 	}
 }
-#ifdef USE_MONADO_ILLIXR_DRIVER
-static void
-ipc_client_hmd_get_hand_tracking(struct xrt_device *xdev,
-                                    enum xrt_input_name name,
-                                    int64_t at_timestamp_ns,
-                                    struct xrt_hand_joint_set *out_value,
-                                    int64_t *out_timestamp_ns)
-{
-	ipc_client_hmd_t *icd = ipc_client_hmd(xdev);
 
-	xrt_result_t xret = ipc_call_device_get_hand_tracking( //
-	    icd->ipc_c,                                        //
-	    icd->device_id,                                    //
-	    name,                                              //
-	    at_timestamp_ns,                                   //
-	    out_value,                                         //
-	    out_timestamp_ns);                                 //
-	IPC_CHK_ONLY_PRINT(icd->ipc_c, xret, "ipc_call_device_get_hand_tracking");
-}
-#endif
 static xrt_result_t
 ipc_client_hmd_get_face_tracking(struct xrt_device *xdev,
                                  enum xrt_input_name facial_expression_type,
@@ -350,9 +331,6 @@ ipc_client_hmd_create(struct ipc_connection *ipc_c, struct xrt_tracking_origin *
 	ich->base.get_tracked_pose = ipc_client_hmd_get_tracked_pose;
 	ich->base.get_face_tracking = ipc_client_hmd_get_face_tracking;
 	ich->base.get_view_poses = ipc_client_hmd_get_view_poses;
-#ifdef USE_MONADO_ILLIXR_DRIVER
-	ich->base.get_hand_tracking = ipc_client_hmd_get_hand_tracking;
-#endif
 	ich->base.compute_distortion = ipc_client_hmd_compute_distortion;
 	ich->base.destroy = ipc_client_hmd_destroy;
 	ich->base.is_form_factor_available = ipc_client_hmd_is_form_factor_available;
