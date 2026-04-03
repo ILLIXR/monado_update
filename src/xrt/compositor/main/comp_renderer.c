@@ -54,6 +54,7 @@
 #define MOTION_VECTOR_WIDTH 432
 #define MOTION_VECTOR_HEIGHT 432
 
+#define ILLIXR_MV_SENTINEL_SIZE 9999.0f
 // Globals defined in comp_compositor.c; extern'd here so dispatch_graphics
 // can read the shared-memory ring index written by the hook DLL.
 extern struct comp_swapchain *g_illixr_mv_sc;
@@ -1867,17 +1868,18 @@ dispatch_graphics(struct comp_renderer *r,
 	{
 		uint32_t n = 0;
 		for (uint32_t i = 0; i < layer_count; i++) {
-			COMP_WARN(c, "Checking layer %d: type %d == %d, %.1f < -9998.0   %.1f   %.1f", i, (int)layers[i].data.type, (int)XRT_LAYER_QUAD, layers[i].data.quad.pose.position.z,
-			          layers[i].data.quad.pose.position.y, layers[i].data.quad.pose.position.x);
-			if (layers[i].data.type == XRT_LAYER_QUAD && layers[i].data.quad.pose.position.z < -9998.0f) {
+			//COMP_WARN(c, "Checking layer %d: type %d == %d, %.1f > 9998.0", i, (int)layers[i].data.type, (int)XRT_LAYER_QUAD,
+			//          layers[i].data.quad.size.x);
+			if (layers[i].data.type == XRT_LAYER_QUAD &&
+			    layers[i].data.quad.size.x > (ILLIXR_MV_SENTINEL_SIZE - 1.0f)) {
 				// Sentinel quad: capture swapchain pointer if not yet done.
-				COMP_WARN(c, "  set sc pointer:  %p == NULL  %p != NULL", g_illixr_mv_sc,
-				          layers[i].sc_array[0]);
+			//	COMP_WARN(c, "  set sc pointer:  %p == NULL  %p != NULL", g_illixr_mv_sc,
+			//	          layers[i].sc_array[0]);
 				if (g_illixr_mv_sc == NULL && layers[i].sc_array[0] != NULL) {
 					g_illixr_mv_sc = (struct comp_swapchain *)layers[i].sc_array[0];
-					COMP_WARN(c, "ILLIXR: Captured MV swapchain from sentinel: %ux%u sc=%p",
-					          g_illixr_mv_sc->vkic.info.width, +g_illixr_mv_sc->vkic.info.height,
-					          (void *)g_illixr_mv_sc);
+			//		COMP_WARN(c, "ILLIXR: Captured MV swapchain from sentinel: %ux%u sc=%p",
+			//		          g_illixr_mv_sc->vkic.info.width, +g_illixr_mv_sc->vkic.info.height,
+			//		          (void *)g_illixr_mv_sc);
 				}
 				// Do NOT add to filtered list — exclude from compositing.
 			} else {
@@ -1897,7 +1899,7 @@ dispatch_graphics(struct comp_renderer *r,
 
 	uint32_t mv_ring_index = 0;
 	bool mv_shmem_valid = false;
-	COMP_WARN(c, "ILLIXR shm:  %p   %p", (void *)g_illixr_shmem, (void *)g_illixr_mv_sc);
+	//COMP_WARN(c, "ILLIXR shm:  %p   %p", (void *)g_illixr_shmem, (void *)g_illixr_mv_sc);
 	if (g_illixr_shmem != NULL && g_illixr_mv_sc != NULL) {
 		// Two-read protocol: seq before and after ring_index read.
 		// On x86 32-bit aligned reads are naturally atomic so a single
@@ -1906,8 +1908,8 @@ dispatch_graphics(struct comp_renderer *r,
 		uint32_t ring = g_illixr_shmem->ring_index;
 		uint32_t seq_after = g_illixr_shmem->frame_seq;
 
-		COMP_WARN(c, "    check: %d == %d  && %d != %d && %d < %d", seq_before, seq_after, seq_before,
-		          g_illixr_last_seq, ring, g_illixr_mv_sc->vkic.image_count);
+		//COMP_WARN(c, "    check: %d == %d  && %d != %d && %d < %d", seq_before, seq_after, seq_before,
+		//          g_illixr_last_seq, ring, g_illixr_mv_sc->vkic.image_count);
 		if (seq_before == seq_after // no torn write
 		    && seq_before != g_illixr_last_seq // new frame
 		    && ring < g_illixr_mv_sc->vkic.image_count) // valid index
@@ -2549,8 +2551,10 @@ dispatch_graphics(struct comp_renderer *r,
 							    r->illixr_motion_vectors[fb_idx].memory;
 							r->illixr_framebuffers[fb_idx].motion_vec_view =
 							    r->illixr_motion_vectors[fb_idx].view;
-							r->illixr_framebuffers[fb_idx].motion_vec_extent.width = mv_w;
-							r->illixr_framebuffers[fb_idx].motion_vec_extent.height = mv_h;
+							r->illixr_framebuffers[fb_idx].motion_vec_extent.width =
+							    MOTION_VECTOR_WIDTH;
+							r->illixr_framebuffers[fb_idx].motion_vec_extent.height =
+							    MOTION_VECTOR_HEIGHT;
 							r->illixr_framebuffers[fb_idx].motion_vec_size =
 							    r->illixr_motion_vectors[fb_idx].memory_size;
 							r->illixr_framebuffers[fb_idx].motion_vec_offset = 0;
