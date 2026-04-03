@@ -35,45 +35,11 @@ extern "C" {
 #define ILLIXR_HAND_JOINT_COUNT 26
 
 /**
- * @brief Tracking validity flags for a single hand joint.
- *
- * Values match XrSpaceLocationFlags / pose::joint_location_flags so they can
- * be forwarded to Monado without translation:
- *   Bit 0 (0x01): Orientation valid
- *   Bit 1 (0x02): Position valid
- *   Bit 2 (0x04): Linear velocity valid
- *   Bit 3 (0x08): Angular velocity valid
- *   Bit 4 (0x10): Orientation tracked (live sensor data, not extrapolated)
- *   Bit 5 (0x20): Position tracked (live sensor data, not extrapolated)
- */
-
-/**
- * @brief Pose and velocity data for a single tracked hand joint.
- */
-struct illixr_hand_joint {
-    struct xrt_vec3 position;         //!< Joint position in metres
-    struct xrt_quat orientation;      //!< Joint orientation quaternion
-    float           radius;           //!< Approximate joint sphere radius in metres
-    struct xrt_vec3 linear_velocity;  //!< Linear velocity in m/s
-    struct xrt_vec3 angular_velocity; //!< Angular velocity in rad/s
-    uint32_t        location_flags;   //!< XrSpaceLocationFlags bitmask (see above)
-};
-
-/**
- * @brief Joint tracking data for a single hand.
- */
-struct illixr_single_hand {
-    struct illixr_hand_joint joints[ILLIXR_HAND_JOINT_COUNT]; //!< All 26 joints
-    bool  is_active;  //!< Whether the hand is currently tracked
-    float confidence; //!< Overall tracking confidence in [0, 1]
-};
-
-/**
  * @brief Joint tracking data for both hands.
  */
 struct illixr_hand_tracking_data {
-    struct illixr_single_hand left_hand;  //!< Left hand joint data
-    struct illixr_single_hand right_hand; //!< Right hand joint data
+    struct xrt_hand_joint_set left_hand;  //!< Left hand joint data
+    struct xrt_hand_joint_set right_hand; //!< Right hand joint data
     bool valid;                           //!< Whether this struct contains valid data
 };
 
@@ -91,12 +57,12 @@ struct illixr_hand_tracking_data {
  * - +Z: outward from the back of the hand.
  * - +Y: from wrist toward the middle finger.
  * - +X: rightward when looking at the back of the hand (right-hand rule).
- */
+ 
 struct illixr_palm_pose {
     struct xrt_vec3 position;    //!< Palm origin in metres
     struct xrt_quat orientation; //!< Palm orientation quaternion
     bool            valid;       //!< Whether this pose is valid
-};
+};*/
 
 /*
  *
@@ -111,8 +77,7 @@ struct illixr_palm_pose {
  * meaningful only for AIM, GRIP, and PINCH; they are always 0 / false for POKE.
  */
 struct illixr_interaction_pose {
-    struct xrt_vec3 position;    //!< Action-space origin in metres
-    struct xrt_quat orientation; //!< Action-space orientation quaternion
+    struct xrt_space_relation relation;
     float           value;       //!< Gesture-strength scalar in [0, 1]
     bool            ready;       //!< Whether the gesture is currently activatable
     bool            valid;       //!< Whether this pose is valid
@@ -190,7 +155,7 @@ bool illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data);
  * @param out_hand  Output struct to populate
  * @return true if valid data was written
  */
-bool illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand);
+bool illixr_read_single_hand(int hand, struct xrt_hand_joint_set *out_hand);
 
 /*
  *
@@ -204,10 +169,10 @@ bool illixr_read_single_hand(int hand, struct illixr_single_hand *out_hand);
  * @param out_poses Output struct to populate; out_poses->valid set to false on failure
  * @return true if valid data was written
  */
-bool illixr_read_palm_pose(int hand, struct illixr_palm_pose *out_pose);
+bool illixr_read_palm_pose(int hand, struct xrt_space_relation *out_pose);
 
 struct xrt_space_relation
-illixr_read_head_relation(void);
+illixr_read_head_relation(int64_t at_timestamp_ns);
 
 /*
  *

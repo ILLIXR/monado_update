@@ -49,13 +49,20 @@ illixr_hmd_create(const char *path, const char *comp);
  * @ingroup drv_illixr
  */
 struct xrt_device *
-illixr_hand_device_create(int hand, struct xrt_tracking_origin *origin);
+illixr_hand_tracking_device_create(int hand, struct xrt_tracking_origin *origin);
 
 /*!
- * @dir drivers/illixr
+ * Create an XR_EXT_hand_interaction device for one hand.
  *
- * @brief @ref drv_illixr files.
+ * Must be called after illixr_hmd_create (which starts the ILLIXR runtime
+ * and sets up the switchboard readers used by this device).
+ *
+ * @param hand  0 for left hand, 1 for right hand
+ * @ingroup drv_illixr
  */
+struct xrt_device *
+illixr_hand_interaction_device_create(int hand, struct xrt_tracking_origin *origin);
+
 
 
 #ifdef __cplusplus
