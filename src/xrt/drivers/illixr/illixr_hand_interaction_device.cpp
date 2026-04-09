@@ -220,35 +220,37 @@ illixr_hand_interaction_device_update_inputs(struct xrt_device *xdev)
  */
 static xrt_result_t
 illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
-                                    enum xrt_input_name name,
-                                    int64_t at_timestamp_ns,
-                                    struct xrt_space_relation *out_relation)
+                                                enum xrt_input_name name,
+                                                int64_t at_timestamp_ns,
+                                                struct xrt_space_relation *out_relation)
 {
 	(void)at_timestamp_ns;
 	ht_log("Get tracked");
 	struct illixr_hand_interaction_device *hd = illixr_hand_interaction_device(xdev);
 
-	const enum xrt_space_relation_flags full_flags = (enum xrt_space_relation_flags)(
-	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-	    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+	//const enum xrt_space_relation_flags full_flags = (enum xrt_space_relation_flags)(
+	//    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+	//    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
 
 	// ---- Palm pose -------------------------------------------------------
 	if (name == XRT_INPUT_GENERIC_PALM_POSE) {
 		ht_log("   palm");
-		struct illixr_palm_pose palm = {};
-		if (!illixr_read_palm_pose(hd->hand, &palm) || !palm.valid) {
+		//struct illixr_palm_pose palm = {};
+		if (!illixr_read_palm_pose(hd->hand, out_relation)) {
 			out_relation->relation_flags = (enum xrt_space_relation_flags)0;
 			return XRT_SUCCESS;
 		}
-		out_relation->pose.position.x = palm.position.x;
-		out_relation->pose.position.y = palm.position.y;
-		out_relation->pose.position.z = palm.position.z;
-		out_relation->pose.orientation.x = palm.orientation.x;
-		out_relation->pose.orientation.y = palm.orientation.y;
-		out_relation->pose.orientation.z = palm.orientation.z;
-		out_relation->pose.orientation.w = palm.orientation.w;
-		out_relation->relation_flags = full_flags;
-		ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x", palm.position.x, palm.position.y, palm.position.z, full_flags);
+		//out_relation->pose.position.x = palm.position.x;
+		//out_relation->pose.position.y = palm.position.y;
+		//out_relation->pose.position.z = palm.position.z;
+		//out_relation->pose.orientation.x = palm.orientation.x;
+		//out_relation->pose.orientation.y = palm.orientation.y;
+		//out_relation->pose.orientation.z = palm.orientation.z;
+		//out_relation->pose.orientation.w = palm.orientation.w;
+		//out_relation->relation_flags = full_flags;
+		ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x",
+		       out_relation->pose.position.x, out_relation->pose.position.y, out_relation->pose.position.z,
+		       out_relation->relation_flags);
 		return XRT_SUCCESS;
 	}
 
@@ -296,18 +298,18 @@ illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
 		out_relation->relation_flags = (enum xrt_space_relation_flags)0;
 		return XRT_SUCCESS;
 	}
-
-	out_relation->pose.position.x = src.position.x;
+	*out_relation = src.relation;
+	/* out_relation->pose.position.x = src.position.x;
 	out_relation->pose.position.y = src.position.y;
 	out_relation->pose.position.z = src.position.z;
 	out_relation->pose.orientation.x = src.orientation.x;
 	out_relation->pose.orientation.y = src.orientation.y;
 	out_relation->pose.orientation.z = src.orientation.z;
 	out_relation->pose.orientation.w = src.orientation.w;
-	out_relation->relation_flags = full_flags;
+	out_relation->relation_flags = full_flags;*/
 #ifdef BUILD_WITH_LOGGING
-	ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x", src.position.x, src.position.y,
-	       src.position.z, full_flags);
+	ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x", src.relation.pose.position.x,
+	       src.relation.pose.position.y, src.relation.pose.position.z, src.relation.relation_flags);
 #endif
 	return XRT_SUCCESS;
 }

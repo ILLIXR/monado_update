@@ -83,7 +83,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(illixr_debug, "ILLIXR_PRINT_DEBUG", false)
 
 /**
  * @brief Convert illixr_hand_joint to xrt_hand_joint_value
- */
+ 
 static void
 convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand_joint_value *dst)
 {
@@ -148,7 +148,7 @@ convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand
 	}
 
 	dst->relation.relation_flags = flags;
-}
+}*/
 
 
 // clang-format on
@@ -228,10 +228,7 @@ illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
 		return;
 	}
 
-	// Fetch hand data from ILLIXR switchboard
-	struct illixr_single_hand hand_data;
-
-	if (!illixr_read_single_hand(hd->hand, &hand_data)) {
+	if (!illixr_read_single_hand(hd->hand, out_value)) {
 #ifdef BUILD_WITH_LOGGING
 		ht_log("illixr_read_single_hand returned false for hand %d", hd->hand);
 #endif
@@ -239,10 +236,7 @@ illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
 		return;
 	}
 
-	// Set active state
-	out_value->is_active = hand_data.is_active;
-
-	if (!hand_data.is_active) {
+	if (!out_value->is_active) {
 #ifdef BUILD_WITH_LOGGING
 		ht_log("Hand %d not active", hd->hand);
 #endif
@@ -251,9 +245,9 @@ illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
 
 	// Convert all joints: position, orientation, radius, linear velocity,
 	// angular velocity, and validity flags
-	for (int i = 0; i < XRT_HAND_JOINT_COUNT; i++) {
-		convert_illixr_joint_to_xrt(&hand_data.joints[i], &out_value->values.hand_joint_set_default[i]);
-	}
+	//for (int i = 0; i < XRT_HAND_JOINT_COUNT; i++) {
+	//	convert_illixr_joint_to_xrt(&hand_data.joints[i], &out_value->values.hand_joint_set_default[i]);
+	//}
 	// ILLIXR joints are already in world-space so the hand_pose.pose should be identity
 	out_value->hand_pose.pose.orientation.w = 1.0f;
 	out_value->hand_pose.pose.orientation.x = 0.0f;
@@ -268,7 +262,7 @@ illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
 	       out_value->values.hand_joint_set_default[1].relation.pose.position.x,
 	       out_value->values.hand_joint_set_default[1].relation.pose.position.y,
 	       out_value->values.hand_joint_set_default[1].relation.pose.position.z,
-	       hand_data.joints[1].location_flags);
+	       out_value->values.hand_joint_set_default[1].relation.relation_flags);
 #endif
 }
 

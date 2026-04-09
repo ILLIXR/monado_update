@@ -6,7 +6,7 @@
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
-
+#define BUILD_WITH_LOGGING
 #include <assert.h>
 #include <math.h>
 #include <string>
@@ -34,9 +34,7 @@
 
 // Include os_time.h for timestamp utilities if available
 // This provides os_monotonic_get_ns() on supported platforms
-#ifdef XRT_HAVE_TIMESPEC
 #include "os/os_time.h"
-#endif
 
 #include "illixr/dynamic_lib.hpp"
 #include "illixr/global_module_defs.hpp"
@@ -151,7 +149,6 @@ illixr_hmd_get_tracked_pose(struct xrt_device *xdev,
                             int64_t at_timestamp_ns,
                             struct xrt_space_relation *out_relation)
 {
-	(void)at_timestamp_ns;
 	if (name != XRT_INPUT_GENERIC_HEAD_POSE) {
 		DH_ERROR(illixr_hmd(xdev), "unknown input name");
 		return XRT_ERROR_INPUT_UNSUPPORTED;
@@ -159,7 +156,7 @@ illixr_hmd_get_tracked_pose(struct xrt_device *xdev,
 
 	// illixr_read_head_relation populates pose, linear/angular velocity,
 	// and all relation flags (including velocity valid bits) from head_pose_type.
-	*out_relation = illixr_read_head_relation();
+	*out_relation = illixr_read_head_relation(at_timestamp_ns);
 	return XRT_SUCCESS;
 }
 

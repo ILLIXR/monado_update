@@ -408,7 +408,7 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 							   ${CMAKE_CURRENT_SOURCE_DIR}/../compositor
 	)
 	list(APPEND ENABLED_HEADSET_DRIVERS illixr)
-	target_compile_definitions(drv_illixr PRIVATE BUILDING_MONADO_ILLIXR_DRIVER)
+	target_compile_definitions(drv_illixr PRIVATE BUILDING_MONADO_ILLIXR_DRIVER ENABLE_MONADO USING_OPENXR)
 endif()
 
 add_library(drv_multi STATIC multi_wrapper/multi.c multi_wrapper/multi.h)

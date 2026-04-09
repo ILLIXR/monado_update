@@ -49,6 +49,17 @@
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
 #include "shaders/depth16_to_rg_spirv.h"
+#include "../drivers/illixr/illixr_mv_shmem.h"
+
+#define MOTION_VECTOR_WIDTH 432
+#define MOTION_VECTOR_HEIGHT 432
+
+#define ILLIXR_MV_SENTINEL_SIZE 9999.0f
+// Globals defined in comp_compositor.c; extern'd here so dispatch_graphics
+// can read the shared-memory ring index written by the hook DLL.
+extern struct comp_swapchain *g_illixr_mv_sc;
+extern IllixrMvShmem *g_illixr_shmem;
+extern uint32_t g_illixr_last_seq;
 #endif
 
 /*
@@ -162,7 +173,7 @@ struct comp_renderer
 	VkDescriptorSet depth_to_rg_desc_sets[2 * OFFLOAD_BUFFER_POOL_SIZE];
 	VkSampler depth_sampler;
 
-	// Color downsampled images for encoding (12 total: 6 buffers × 2 eyes)
+	// Color downsampled images for encoding (6 total: 3 buffers × 2 eyes)
 	struct {
 		VkImage image;
 		VkDeviceMemory memory;
@@ -173,7 +184,7 @@ struct comp_renderer
 		uint32_t height;
 	} illixr_color_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
-	// Depth downsampled images from Unity (12 total: 6 buffers × 2 eyes)
+	// Depth downsampled images from Unity (6 total: 3 buffers × 2 eyes)
 	struct {
 		VkImage image;
 		VkDeviceMemory memory;
@@ -184,7 +195,18 @@ struct comp_renderer
 		uint32_t height;
 	} illixr_depth_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
-	// RG-encoded depth images for encoder (12 total: 6 buffers × 2 eyes)
+	// Motion vector images (RGBA16F) copied from Unity's sentinel quad layer
+	struct
+	{
+		VkImage image;
+		VkDeviceMemory memory;
+		VkImageView view;
+		VkDeviceSize memory_size;
+		uint32_t width;
+		uint32_t height;
+	} illixr_motion_vectors[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+	// RG-encoded depth images for encoder (6 total: 3 buffers × 2 eyes)
 	struct {
 		VkImage image;
 		VkDeviceMemory memory;
@@ -1110,6 +1132,21 @@ renderer_fini(struct comp_renderer *r)
 		vk->vkDestroySampler(vk->device, r->depth_sampler, NULL);
 		r->depth_sampler = VK_NULL_HANDLE;
 	}
+
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		if (r->illixr_motion_vectors[i].view != VK_NULL_HANDLE) {
+			vk->vkDestroyImageView(vk->device, r->illixr_motion_vectors[i].view, NULL);
+			r->illixr_motion_vectors[i].view = VK_NULL_HANDLE;
+		}
+		if (r->illixr_motion_vectors[i].image != VK_NULL_HANDLE) {
+			vk->vkDestroyImage(vk->device, r->illixr_motion_vectors[i].image, NULL);
+			r->illixr_motion_vectors[i].image = VK_NULL_HANDLE;
+		}
+		if (r->illixr_motion_vectors[i].memory != VK_NULL_HANDLE) {
+			vk->vkFreeMemory(vk->device, r->illixr_motion_vectors[i].memory, NULL);
+			r->illixr_motion_vectors[i].memory = VK_NULL_HANDLE;
+		}
+	}
 #endif
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
@@ -1423,6 +1460,109 @@ static void create_illixr_depth_rg_images(struct comp_renderer* r, uint32_t widt
 }
 
 static void
+create_illixr_motion_vector_images(struct comp_renderer *r, uint32_t width, uint32_t height)
+{
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+
+	COMP_INFO(c, "Creating ILLIXR motion vector images: %ux%u", width, height);
+
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage =
+		        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		VkExternalMemoryImageCreateInfo external_info = {
+		    .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+#endif
+		};
+		image_info.pNext = &external_info;
+
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL, &r->illixr_motion_vectors[i].image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create motion vector image %u: %d", i, ret);
+			return;
+		}
+
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, r->illixr_motion_vectors[i].image, &mem_reqs);
+
+		uint32_t memory_type_index;
+		if (!vk_get_memory_type(vk, mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		                        &memory_type_index)) {
+			COMP_ERROR(c, "No suitable memory type for motion vector image %u", i);
+			return;
+		}
+
+		VkExportMemoryAllocateInfo export_alloc = {
+		    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+#ifdef _WIN32
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+#else
+		    .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+#endif
+		};
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .pNext = &export_alloc,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex = memory_type_index,
+		};
+
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &r->illixr_motion_vectors[i].memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to allocate motion vector memory %u: %d", i, ret);
+			return;
+		}
+
+		ret = vk->vkBindImageMemory(vk->device, r->illixr_motion_vectors[i].image,
+		                            r->illixr_motion_vectors[i].memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to bind motion vector memory %u: %d", i, ret);
+			return;
+		}
+
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = r->illixr_motion_vectors[i].image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+		    .subresourceRange =
+		        {
+		            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		            .levelCount = 1,
+		            .layerCount = 1,
+		        },
+		};
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL, &r->illixr_motion_vectors[i].view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create motion vector image view %u: %d", i, ret);
+			return;
+		}
+
+		r->illixr_motion_vectors[i].memory_size = mem_reqs.size;
+		r->illixr_motion_vectors[i].width = width;
+		r->illixr_motion_vectors[i].height = height;
+	}
+	COMP_INFO(c, "Created %d motion vector images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+}
+
+static void
 create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
 {
 	struct comp_compositor *c = r->c;
@@ -1717,6 +1857,71 @@ dispatch_graphics(struct comp_renderer *r,
 		}
 	}
 
+	// ILLIXR: Scan layers for the sentinel quad (position.z < -9998).
+	// Purpose: capture g_illixr_mv_sc on the first arrival.
+	// The sentinel is filtered out of the display layer list so it is not
+	// passed to comp_render_gfx_dispatch (which would try to composite it).
+	const struct comp_layer filtered_layers_storage[XRT_MAX_LAYERS];
+	const struct comp_layer *filtered_layers = layers;
+	uint32_t filtered_count = layer_count;
+	
+	{
+		uint32_t n = 0;
+		for (uint32_t i = 0; i < layer_count; i++) {
+			//COMP_WARN(c, "Checking layer %d: type %d == %d, %.1f > 9998.0", i, (int)layers[i].data.type, (int)XRT_LAYER_QUAD,
+			//          layers[i].data.quad.size.x);
+			if (layers[i].data.type == XRT_LAYER_QUAD &&
+			    layers[i].data.quad.size.x > (ILLIXR_MV_SENTINEL_SIZE - 1.0f)) {
+				// Sentinel quad: capture swapchain pointer if not yet done.
+			//	COMP_WARN(c, "  set sc pointer:  %p == NULL  %p != NULL", g_illixr_mv_sc,
+			//	          layers[i].sc_array[0]);
+				if (g_illixr_mv_sc == NULL && layers[i].sc_array[0] != NULL) {
+					g_illixr_mv_sc = (struct comp_swapchain *)layers[i].sc_array[0];
+			//		COMP_WARN(c, "ILLIXR: Captured MV swapchain from sentinel: %ux%u sc=%p",
+			//		          g_illixr_mv_sc->vkic.info.width, +g_illixr_mv_sc->vkic.info.height,
+			//		          (void *)g_illixr_mv_sc);
+				}
+				// Do NOT add to filtered list — exclude from compositing.
+			} else {
+				((struct comp_layer *)filtered_layers_storage)[n++] = layers[i];
+			}
+		}
+		if (n < layer_count) {
+			filtered_layers = filtered_layers_storage;
+			filtered_count = n;
+		}
+	}
+
+	// Read MV ring-buffer index from shared memory (written by hook DLL after
+	// each xrReleaseSwapchainImage for the MV swapchain).
+	if (g_illixr_shmem == NULL)
+		illixr_shmem_open();
+
+	uint32_t mv_ring_index = 0;
+	bool mv_shmem_valid = false;
+	//COMP_WARN(c, "ILLIXR shm:  %p   %p", (void *)g_illixr_shmem, (void *)g_illixr_mv_sc);
+	if (g_illixr_shmem != NULL && g_illixr_mv_sc != NULL) {
+		// Two-read protocol: seq before and after ring_index read.
+		// On x86 32-bit aligned reads are naturally atomic so a single
+		// read suffices, but reading seq twice is clearer.
+		uint32_t seq_before = g_illixr_shmem->frame_seq;
+		uint32_t ring = g_illixr_shmem->ring_index;
+		uint32_t seq_after = g_illixr_shmem->frame_seq;
+
+		//COMP_WARN(c, "    check: %d == %d  && %d != %d && %d < %d", seq_before, seq_after, seq_before,
+		//          g_illixr_last_seq, ring, g_illixr_mv_sc->vkic.image_count);
+		if (seq_before == seq_after // no torn write
+		    && seq_before != g_illixr_last_seq // new frame
+		    && ring < g_illixr_mv_sc->vkic.image_count) // valid index
+		{
+			mv_ring_index = ring;
+			mv_shmem_valid = true;
+			g_illixr_last_seq = seq_before;
+		}
+	} else if (g_illixr_mv_sc == NULL) {
+		COMP_WARN(c, "ILLIXR: g_illixr_mv_sc still NULL - waiting for sentinel quad layer from Unity");
+	}
+
 	if (proj_layer) {
 		struct xrt_pose left_pose;
 		struct xrt_pose right_pose;
@@ -1908,11 +2113,11 @@ dispatch_graphics(struct comp_renderer *r,
 #endif
 
 	// Build the command buffer.
-	comp_render_gfx_dispatch( //
-	    render,               //
-	    layers,               //
-	    layer_count,          //
-	    &data);               //
+	comp_render_gfx_dispatch(
+	    render,
+	    filtered_layers,
+	    filtered_count,
+	    &data);
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && !illixr_offload_frames()) {
@@ -1929,18 +2134,66 @@ dispatch_graphics(struct comp_renderer *r,
 				// Target encoding resolution (no scaling)
 				uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
 				uint32_t target_height = r->c->xdev->hmd->views[0].display.h_pixels;
+
+				uint32_t depth_width = MOTION_VECTOR_WIDTH;
+				uint32_t depth_height = MOTION_VECTOR_HEIGHT;
+
 				// Create color downsampled images
 				create_illixr_color_downsampled_images(r, target_width, target_height);
 
 				// Create depth downsampled images
-				create_illixr_depth_downsampled_images(r, target_width, target_height);
+				create_illixr_depth_downsampled_images(r, depth_width, depth_height);
 
 				// Create RG depth images
-				create_illixr_depth_rg_images(r, target_width, target_height);
+				create_illixr_depth_rg_images(r, depth_width, depth_height);
 
 				// Create depth-to-RG pipeline and descriptors
 				create_depth_to_rg_pipeline(r);
 				create_depth_to_rg_descriptors(r);
+
+				// Pre-populate ALL framebuffer slots for color and depth immediately
+				// after image creation.  nvenc_import_buffer_pool_images runs once on
+				// the first src_release, which may arrive before every buffer slot has
+				// been rendered into.  Slots whose fb->image is still VK_NULL_HANDLE are
+				// skipped entirely (the continue guard in the import loop), so those
+				// encoder indices stay at -1 and later encode calls warn "not imported".
+				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+					// COLOR
+					r->illixr_framebuffers[i].image         = r->illixr_color_downsampled[i].image;
+					r->illixr_framebuffers[i].memory        = r->illixr_color_downsampled[i].memory;
+					r->illixr_framebuffers[i].view          = r->illixr_color_downsampled[i].view;
+					r->illixr_framebuffers[i].image_size    = r->illixr_color_downsampled[i].memory_size;
+					r->illixr_framebuffers[i].image_offset  = 0;
+					r->illixr_framebuffers[i].image_extent.width  = r->illixr_color_downsampled[i].width;
+					r->illixr_framebuffers[i].image_extent.height = r->illixr_color_downsampled[i].height;
+					// DEPTH (RG image, always valid when depth is enabled)
+					r->illixr_framebuffers[i].depth_image   = r->illixr_depth_rg[i].image;
+					r->illixr_framebuffers[i].depth_memory  = r->illixr_depth_rg[i].memory;
+					r->illixr_framebuffers[i].depth_view    = r->illixr_depth_rg[i].view;
+					r->illixr_framebuffers[i].depth_size    = r->illixr_depth_rg[i].memory_size;
+					r->illixr_framebuffers[i].depth_offset  = 0;
+					r->illixr_framebuffers[i].depth_extent.width  = r->illixr_depth_rg[i].width;
+					r->illixr_framebuffers[i].depth_extent.height = r->illixr_depth_rg[i].height;
+				}
+
+				// Create motion vector images eagerly so that all buffer-pool
+				// slots have valid VkImage handles before the server calls
+				// nvenc_import_buffer_pool_images() on the first src_release.
+				// Previously these were lazy-created on the first blit, which
+				// meant the one-shot import ran before any sentinel quad had
+				// been submitted and saw VK_NULL_HANDLE for every slot.
+				// MOTION_VECTOR_WIDTH/HEIGHT are compile-time constants so we
+				// do not need Unity's swapchain dimensions here.
+				create_illixr_motion_vector_images(r, MOTION_VECTOR_WIDTH, MOTION_VECTOR_HEIGHT);
+				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+					r->illixr_framebuffers[i].motion_vec_image  = r->illixr_motion_vectors[i].image;
+					r->illixr_framebuffers[i].motion_vec_memory = r->illixr_motion_vectors[i].memory;
+					r->illixr_framebuffers[i].motion_vec_view   = r->illixr_motion_vectors[i].view;
+					r->illixr_framebuffers[i].motion_vec_size   = r->illixr_motion_vectors[i].memory_size;
+					r->illixr_framebuffers[i].motion_vec_offset = 0;
+					r->illixr_framebuffers[i].motion_vec_extent.width  = MOTION_VECTOR_WIDTH;
+					r->illixr_framebuffers[i].motion_vec_extent.height = MOTION_VECTOR_HEIGHT;
+				}
 
 				r->illixr_downsampled_created = true;
 			}
@@ -2175,6 +2428,14 @@ dispatch_graphics(struct comp_renderer *r,
 							r->illixr_framebuffers[fb_idx].depth_size = r->illixr_depth_rg[fb_idx].memory_size;
 							r->illixr_framebuffers[fb_idx].depth_offset = 0;
 
+							// Projection clip planes from XrCompositionLayerDepthInfoKHR.
+							// Unity writes these into the depth layer; forward them so the
+							// decoder can linearise depth values back into view-space metres.
+							r->illixr_framebuffers[fb_idx].near_z =
+							    proj_layer->data.depth.d[eye].near_z;
+							r->illixr_framebuffers[fb_idx].far_z =
+							    proj_layer->data.depth.d[eye].far_z;
+
 							// Calculate buffer_idx for logging
 							uint32_t buffer_idx = fb_idx / 2;
 							//COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d (D16→RG)", buffer_idx, eye);
@@ -2189,13 +2450,129 @@ dispatch_graphics(struct comp_renderer *r,
 					r->illixr_framebuffers[fb_idx].depth_offset = 0;
 					r->illixr_framebuffers[fb_idx].depth_extent.width = 0;
 					r->illixr_framebuffers[fb_idx].depth_extent.height = 0;
+					r->illixr_framebuffers[fb_idx].near_z = 0.0f;
+					r->illixr_framebuffers[fb_idx].far_z  = 0.0f;
 
 					if (eye == 0) { // Only log once
-						COMP_DEBUG(c, "ILLIXR: No depth layer (type=%d)",
+						COMP_WARN(c, "ILLIXR: No depth layer (type=%d)",
 						           proj_layer ? proj_layer->data.type : -1);
 					}
 				}
 
+                                // ILLIXR: Extract motion vectors from the MV swapchain via
+			        // shared memory ring index.
+				if (mv_shmem_valid && g_illixr_mv_sc != NULL) {
+					if (eye == 0) {
+						COMP_WARN(c, "ILLIXR: MV shmem valid: ring=%u seq=%u", mv_ring_index,
+						          g_illixr_last_seq);
+						
+					}
+					{
+						uint32_t mv_img_idx = mv_ring_index;
+						struct comp_swapchain *mv_comp_sc = g_illixr_mv_sc;
+						struct xrt_swapchain *mv_sc = &mv_comp_sc->base.base;
+
+						if (mv_img_idx < mv_sc->image_count) {
+							VkImage unity_mv_src =
+							    mv_comp_sc->vkic.images[mv_img_idx].handle;
+							uint32_t mv_w = mv_comp_sc->vkic.info.width / 2; // per-eye half
+							uint32_t mv_h = mv_comp_sc->vkic.info.height;
+
+							// Motion vector images are created eagerly in the
+							// illixr_downsampled_created block above; no lazy-create needed.
+
+							// Transition Unity's swapchain image → TRANSFER_SRC
+							VkImageMemoryBarrier mv_barrier = {
+							    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+							    .srcAccessMask = VK_ACCESS_NONE,
+							    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+							    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+							    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .image = unity_mv_src,
+							    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+							};
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &mv_barrier);
+
+							// Transition our motion vector image → TRANSFER_DST
+							mv_barrier.srcAccessMask = 0;
+							mv_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							mv_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+							mv_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							mv_barrier.image = r->illixr_motion_vectors[fb_idx].image;
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &mv_barrier);
+
+							// Copy the eye-half out of the side-by-side Unity texture
+							VkImageBlit mv_blit = {
+							    .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+							    .srcOffsets =
+							        {
+							            {(int32_t)(eye * (int32_t)mv_w), 0, 0},
+							            {(int32_t)(eye * (int32_t)mv_w) + (int32_t)mv_w,
+							             (int32_t)mv_h, 1},
+							        },
+							    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+							    .dstOffsets =
+							        {
+							            {0, 0, 0},
+							            {MOTION_VECTOR_WIDTH, MOTION_VECTOR_HEIGHT, 1},
+							        },
+							};
+
+							vk->vkCmdBlitImage(render->r->cmd, unity_mv_src,
+							                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							                   r->illixr_motion_vectors[fb_idx].image,
+							                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+							                   &mv_blit, VK_FILTER_LINEAR);
+
+							// Transition our motion vector image → SHADER_READ for
+							// downstream use
+							mv_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							mv_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+							mv_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							mv_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+							mv_barrier.image = r->illixr_motion_vectors[fb_idx].image;
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							                         0, 0, NULL, 0, NULL, 1, &mv_barrier);
+
+							// Populate framebuffer struct for downstream consumers
+							r->illixr_framebuffers[fb_idx].motion_vec_image =
+							    r->illixr_motion_vectors[fb_idx].image;
+							r->illixr_framebuffers[fb_idx].motion_vec_memory =
+							    r->illixr_motion_vectors[fb_idx].memory;
+							r->illixr_framebuffers[fb_idx].motion_vec_view =
+							    r->illixr_motion_vectors[fb_idx].view;
+							r->illixr_framebuffers[fb_idx].motion_vec_extent.width =
+							    MOTION_VECTOR_WIDTH;
+							r->illixr_framebuffers[fb_idx].motion_vec_extent.height =
+							    MOTION_VECTOR_HEIGHT;
+							r->illixr_framebuffers[fb_idx].motion_vec_size =
+							    r->illixr_motion_vectors[fb_idx].memory_size;
+							r->illixr_framebuffers[fb_idx].motion_vec_offset = 0;
+						}
+					}
+				} else {
+					if (eye == 0) {
+						COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
+						          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
+					}
+
+				}
+				// Note: when mv_layer is NULL (no sentinel quad this frame) the
+				// motion_vec_image handle is left intact.  The VkImage was
+				// allocated once in the illixr_downsampled_created block and is
+				// valid for the lifetime of the renderer; nulling it here would
+				// prevent nvenc_import_buffer_pool_images from importing it on
+				// frames that precede Unity's first sentinel quad submission.
 				//COMP_DEBUG(c, "ILLIXR: Framebuffer %d - color=%p, depth=%p", fb_idx,
 				//           (void *)scratch_image->image,
 				//           (void *)r->illixr_framebuffers[fb_idx].depth_image);
