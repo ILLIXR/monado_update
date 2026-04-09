@@ -44,4 +44,4 @@ struct illixr_framebuffer
 	VkFramebuffer handle;
 };
 
-#define OFFLOAD_BUFFER_POOL_SIZE 6
+#define OFFLOAD_BUFFER_POOL_SIZE 3
