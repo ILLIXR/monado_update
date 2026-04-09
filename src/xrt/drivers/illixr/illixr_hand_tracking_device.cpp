@@ -249,13 +249,13 @@ illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
 	//	convert_illixr_joint_to_xrt(&hand_data.joints[i], &out_value->values.hand_joint_set_default[i]);
 	//}
 	// ILLIXR joints are already in world-space so the hand_pose.pose should be identity
-	//out_value->hand_pose.pose.orientation.w = 1.0f;
-	//out_value->hand_pose.pose.orientation.x = 0.0f;
-	//out_value->hand_pose.pose.orientation.y = 0.0f;
-	//out_value->hand_pose.pose.orientation.z = 0.0f;
-	//out_value->hand_pose.relation_flags = (enum xrt_space_relation_flags)(
-	//    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-	//    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+	out_value->hand_pose.pose.orientation.w = 1.0f;
+	out_value->hand_pose.pose.orientation.x = 0.0f;
+	out_value->hand_pose.pose.orientation.y = 0.0f;
+	out_value->hand_pose.pose.orientation.z = 0.0f;
+	out_value->hand_pose.relation_flags = (enum xrt_space_relation_flags)(
+	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+	    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
 
 #ifdef BUILD_WITH_LOGGING
 	ht_log("Hand %d tracking data returned: wrist=(%.4f, %.4f, %.4f) flags=0x%x", hd->hand,

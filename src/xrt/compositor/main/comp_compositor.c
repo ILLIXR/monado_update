@@ -126,7 +126,7 @@ illixr_shmem_open(void)
 	}
 
 	bool created_new = (GetLastError() != ERROR_ALREADY_EXISTS);
-	// Monado reads ring_index/frame_seq written by the DLL — needs write
+	// Monado reads ring_index/frame_seq written by the DLL â€” needs write
 	// access on the mapping so the view can be mapped FILE_MAP_READ|WRITE.
 	g_illixr_shmem = (IllixrMvShmem *)MapViewOfFile(g_illixr_shmem_h, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
 	                                                ILLIXR_MV_SHMEM_SIZE);
@@ -146,7 +146,7 @@ illixr_shmem_open(void)
 }
 
 // Vtable wrapper: intercept create_swapchain to capture the MV swapchain.
-// The MV swapchain is identified by its side-by-side width (2 × per-eye width,
+// The MV swapchain is identified by its side-by-side width (2 Ã— per-eye width,
 // i.e. >= 4000 px wide) and single array layer.  Normal eye swapchains are
 // created before the feature initialises, so the first wide-format swapchain
 // seen here is reliably the MV one.

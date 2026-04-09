@@ -121,7 +121,7 @@ public:
 	    , hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")}
 	    , hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")}
 	    , palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
-	    , latency_reader_{sb->get_reader<latency_ping>("latency_ping")} 
+	    , latency_reader_{sb->get_reader<latency_ping>("latency_ping")}
 	{
 		sb_timewarp = pb_->lookup_impl<timewarp>();
 
@@ -141,12 +141,12 @@ public:
 			// Default to enabled if offloading frames
 			hand_tracking_enabled_ = offload_frames;
 		}
-		
+
 		if (std::getenv("ILLIXR_USE_PALM_POSES") != nullptr) {
 			std::string val = std::getenv("ILLIXR_USE_PALM_POSES");
 			palm_poses_enabled_ = (val == "1" || val == "true" || val == "TRUE");
         }
-        
+
 		if (std::getenv("ILLIXR_USE_HAND_INTERACTIONS") != nullptr) {
 			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
 			hand_interactions_enabled_ = (val == "1" || val == "true" || val == "TRUE");
@@ -226,59 +226,6 @@ illixr_hand_tracking_supported(void)
 	return illixr_plugin_obj->hand_tracking_enabled_;
 }
 
-/**
- * @brief Convert ILLIXR hand_joint_pose to illixr_hand_joint
- 
-static void
-convert_joint(const pose::hand_joint_pose &src, struct illixr_hand_joint *dst)
-{
-	dst->position.x = src.pose.position.x;
-	dst->position.y = src.pose.position.y;
-	dst->position.z = src.pose.position.z;
-
-	dst->orientation.x = src.pose.orientation.x;
-	dst->orientation.y = src.pose.orientation.y;
-	dst->orientation.z = src.pose.orientation.z;
-	dst->orientation.w = src.pose.orientation.w;
-
-	dst->radius = src.radius;
-
-	dst->linear_velocity.x = src.linearVelocity.x;
-	dst->linear_velocity.y = src.linearVelocity.y;
-	dst->linear_velocity.z = src.linearVelocity.z;
-
-	dst->angular_velocity.x = src.angularVelocity.x;
-	dst->angular_velocity.y = src.angularVelocity.y;
-	dst->angular_velocity.z = src.angularVelocity.z;
-
-	dst->location_flags = 0;
-	if (src.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)
-		dst->location_flags |= XRT_SPACE_RELATION_ORIENTATION_VALID_BIT;
-	if (src.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
-		dst->location_flags |= XRT_SPACE_RELATION_POSITION_VALID_BIT;
-	if (src.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT)
-		dst->location_flags |= XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT;
-	if (src.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT)
-		dst->location_flags |= XRT_SPACE_RELATION_POSITION_TRACKED_BIT;
-	if (src.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT)
-		dst->location_flags |= XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT;
-	if (src.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT)
-		dst->location_flags |= XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT;
-}*/
-
-/**
- * @brief Convert ILLIXR single_hand_state to illixr_single_hand
- 
-static void
-convert_single_hand(const pose::hand_joint_poses &src, struct illixr_single_hand *dst)
-{
-	dst->confidence = src.confidence;
-
-	for (size_t i = 0; i < pose::HAND_JOINT_COUNT; ++i) {
-		convert_joint(src.joints[i], &dst->joints[i]);
-	}
-}*/
-
 extern "C" bool
 illixr_read_single_hand(int hand, struct xrt_hand_joint_set *out_hand)
 {
@@ -301,14 +248,6 @@ illixr_read_single_hand(int hand, struct xrt_hand_joint_set *out_hand)
 	}
 
 	*out_hand = (hand == 0) ? hand_data->hands.at(pose::LEFT) : hand_data->hands.at(pose::RIGHT);
-	//const pose::hand_joint_poses &src = (hand == 0) ? hand_data->hands.at(pose::LEFT) : hand_data->hands.at(pose::RIGHT);
-
-	//if (!src.confidence > 0.) {
-	//	out_hand->is_active = false;
-	//	return false;
-	//}
-
-	//convert_single_hand(src, out_hand);
 	return true;
 }
 
@@ -325,14 +264,13 @@ illixr_read_palm_pose(int hand, struct xrt_space_relation *out_pose)
 	assert(out_pose && "out_pose must not be null.");
 	assert((hand == 0 || hand == 1) && "hand must be 0 (left) or 1 (right).");
 
-	//out_pose->is_active = false;
+	// out_pose->is_active = false;
 
 	if (!illixr_plugin_obj->hand_tracking_enabled_) {
 		return false;
 	}
 
-	std::shared_ptr<const pose::palm_poses_pair> palm_data =
-	    illixr_plugin_obj->palm_pose_reader_.get_ro_nullable();
+	std::shared_ptr<const pose::palm_poses_pair> palm_data = illixr_plugin_obj->palm_pose_reader_.get_ro_nullable();
 
 	if (!palm_data || !palm_data->is_valid()) {
 		return false;
@@ -346,15 +284,6 @@ illixr_read_palm_pose(int hand, struct xrt_space_relation *out_pose)
 	if (out_pose->relation_flags == 0) {
 		return false;
 	}
-
-	//out_pose->position.x    = src.position.x;
-	//out_pose->position.y    = src.position.y;
-	//out_pose->position.z    = src.position.z;
-	//out_pose->orientation.x = src.orientation.x;
-	//out_pose->orientation.y = src.orientation.y;
-	//out_pose->orientation.z = src.orientation.z;
-	//out_pose->orientation.w = src.orientation.w;
-	//out_pose->valid         = true;
 	return true;
 }
 
@@ -388,26 +317,6 @@ illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_
 
 	const pose::hand_interaction_poses &src = interaction_data->hands.at(side);
 
-	// Helper to copy one interaction pose
-	/* auto copy_pose = [](const pose::hand_interaction_pose &s,
-	                    struct illixr_interaction_pose *d) {
-		d->position.x    = s.position.x;
-		d->position.y    = s.position.y;
-		d->position.z    = s.position.z;
-		d->orientation.x = s.orientation.x;
-		d->orientation.y = s.orientation.y;
-		d->orientation.z = s.orientation.z;
-		d->orientation.w = s.orientation.w;
-		d->value         = s.value;
-		d->ready         = s.ready;
-		d->valid         = s.valid();
-	};
-
-	copy_pose(src.at(pose::AIM),   &out_data->poses[ILLIXR_INTERACTION_AIM]);
-	copy_pose(src.at(pose::GRIP),  &out_data->poses[ILLIXR_INTERACTION_GRIP]);
-	copy_pose(src.at(pose::PINCH), &out_data->poses[ILLIXR_INTERACTION_PINCH]);
-	copy_pose(src.at(pose::POKE),  &out_data->poses[ILLIXR_INTERACTION_POKE]);
-	*/
 	out_data->poses[ILLIXR_INTERACTION_AIM].relation = src.at(pose::AIM);
 	out_data->poses[ILLIXR_INTERACTION_GRIP].relation = src.at(pose::GRIP);
 	out_data->poses[ILLIXR_INTERACTION_PINCH].relation = src.at(pose::PINCH);
@@ -437,14 +346,14 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
 	ds->vk_device_ = device;
 	ds->queues_[queue::GRAPHICS] = {queue, queue_family_index, queue::GRAPHICS, std::make_shared<std::mutex>()};
 
-	const char *const *exts      = u_string_list_get_data(enabled_instance_extensions);
-	uint32_t           ext_count = u_string_list_get_size(enabled_instance_extensions);
+	const char *const *exts = u_string_list_get_data(enabled_instance_extensions);
+	uint32_t ext_count      = u_string_list_get_size(enabled_instance_extensions);
 	for (uint32_t i = 0; i < ext_count; i++) {
 		ds->enabled_instance_extensions_.push_back(exts[i]);
 	}
 
-	const char *const *dev_exts      = u_string_list_get_data(enabled_device_extensions);
-	uint32_t           dev_ext_count = u_string_list_get_size(enabled_device_extensions);
+	const char *const *dev_exts = u_string_list_get_data(enabled_device_extensions);
+	uint32_t dev_ext_count      = u_string_list_get_size(enabled_device_extensions);
 	for (uint32_t i = 0; i < dev_ext_count; i++) {
 		ds->enabled_device_extensions_.push_back(dev_exts[i]);
 	}
@@ -490,7 +399,7 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
 	);
 
 	fprintf(stderr, "[ILLIXR] Timewarp setup complete - extent=%ux%u, fb_array=%p\n", extent.width, extent.height,
-	        (void *)framebuffer_array);	
+	        (void *)framebuffer_array);
 }
 
 extern "C" int8_t
@@ -507,27 +416,15 @@ illixr_src_release(int8_t buffer_ind, struct xrt_pose l_pose, struct xrt_pose r_
 
 	auto now = illixr_plugin_obj->sb_clock->now();
 #ifdef USING_OPENXR
-	//std::array<xrt_pose, 2> input_poses{l_pose, r_pose};
-	/* std::array<XrPosef, 2> poses;
-	for (int i = 0; i < 2; i++) {
-		poses[i].orientation.w = input_poses[i].orientation.w;
-		poses[i].orientation.x = input_poses[i].orientation.x;
-		poses[i].orientation.y = input_poses[i].orientation.y;
-		poses[i].orientation.z = input_poses[i].orientation.z;
-		poses[i].position.x = input_poses[i].position.x;
-		poses[i].position.y = input_poses[i].position.y;
-		poses[i].position.z = input_poses[i].position.z;
-	}*/
-
 	illixr_plugin_obj->buffer_pool->src_release_image(buffer_ind, {l_pose, r_pose});
 #else
-	pose::head_pose_type pose{now,
-				  Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
-						  (l_pose.position.y + r_pose.position.y) / 2.f,
-						  (l_pose.position.z + r_pose.position.z) / 2.f},
-				  Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
-						     l_pose.orientation.y, l_pose.orientation.z}};
-	
+	pose::head_pose_type pose{
+	    now,
+	    Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
+	                    (l_pose.position.y + r_pose.position.y) / 2.f,
+	                    (l_pose.position.z + r_pose.position.z) / 2.f},
+	    Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x, l_pose.orientation.y, l_pose.orientation.z}};
+
 	illixr_plugin_obj->buffer_pool->src_release_image(buffer_ind, pose::fast_head_pose_type{pose, {}, {}});
 #endif
 }
@@ -567,11 +464,11 @@ illixr_tw_update_uniforms(xrt_pose l_pose, xrt_pose r_pose)
 
 #else
 		pose::head_pose_type pose{time_point{},
-					  Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
-							  (l_pose.position.y + r_pose.position.y) / 2.f,
-							  (l_pose.position.z + r_pose.position.z) / 2.f},
-					  Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
-							     l_pose.orientation.y, l_pose.orientation.z}};
+		                          Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
+		                                          (l_pose.position.y + r_pose.position.y) / 2.f,
+		                                          (l_pose.position.z + r_pose.position.z) / 2.f},
+		                          Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
+		                                             l_pose.orientation.y, l_pose.orientation.z}};
 #endif
 		illixr_plugin_obj->last_pose = pose;
 	}
