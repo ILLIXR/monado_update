@@ -43,33 +43,6 @@ struct illixr_hand_tracking_data {
     bool valid;                           //!< Whether this struct contains valid data
 };
 
-/*
- *
- * Palm-pose structures (XR_EXT_palm_pose)
- *
- */
-
-/**
- * @brief Pose of a single palm as defined by XR_EXT_palm_pose.
- *
- * Coordinate convention (XR_EXT_palm_pose spec):
- * - Origin: centred on the skin of the palm.
- * - +Z: outward from the back of the hand.
- * - +Y: from wrist toward the middle finger.
- * - +X: rightward when looking at the back of the hand (right-hand rule).
- 
-struct illixr_palm_pose {
-    struct xrt_vec3 position;    //!< Palm origin in metres
-    struct xrt_quat orientation; //!< Palm orientation quaternion
-    bool            valid;       //!< Whether this pose is valid
-};*/
-
-/*
- *
- * Hand-interaction pose structures (XR_EXT_hand_interaction)
- *
- */
-
 /**
  * @brief A single hand interaction pose with its accompanying scalar inputs.
  *

@@ -1,4 +1,4 @@
-// Copyright 2020-2021, The Board of Trustees of the University of Illinois.
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
 // SPDX-License-Identifier: BSL-1.0
 /*!
  * @file

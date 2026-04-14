@@ -1,3 +1,12 @@
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
+// SPDX-License-Identifier: BSL-1.0
+/*!
+ * @file
+ * @brief  ILLIXR shared memory for Quest 3 motion vectors
+ * @author RSIM Group <illixr@cs.illinois.edu>
+ * @ingroup drv_illixr
+ */
+
 // illixr_mv_shmem.h
 //
 // Win32 named shared memory layout shared between IllixrXrHook.dll (Unity

@@ -1,12 +1,11 @@
-// Copyright 2020-2021, The Board of Trustees of the University of Illinois.
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
 // SPDX-License-Identifier: BSL-1.0
 /*!
  * @file
- * @brief  ILLIXR HMD device and XR_EXT_hand_interaction device
+ * @brief  ILLIXR HMD device
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
-#define BUILD_WITH_LOGGING
 #include <assert.h>
 #include <math.h>
 #include <string>
@@ -49,50 +48,6 @@
  *
  */
 
-// Debug file logger - static global
-#ifdef BUILD_WITH_LOGGING
-static FILE *g_debug_log = NULL;
-
-static void
-init_debug_log(void)
-{
-	if (g_debug_log == NULL) {
-		g_debug_log = fopen("D:\\illixr_device_debug.log", "w");
-		if (g_debug_log) {
-			fprintf(g_debug_log, "=== Hand Tracking Debug Log Started ===\n");
-			fflush(g_debug_log);
-		}
-	}
-}
-
-static void
-ht_log(const char *format, ...)
-{
-	if (g_debug_log == NULL) {
-		init_debug_log();
-	}
-
-	if (g_debug_log) {
-		// Get timestamp
-		time_t now = time(NULL);
-		struct tm *tm_info = localtime(&now);
-		char time_buf[64];
-		strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
-
-		// Write timestamp
-		fprintf(g_debug_log, "[%s] ", time_buf);
-
-		// Write actual message
-		va_list args;
-		va_start(args, format);
-		vfprintf(g_debug_log, format, args);
-		va_end(args);
-
-		fprintf(g_debug_log, "\n");
-		fflush(g_debug_log); // CRITICAL - force write immediately
-	}
-}
-#endif
 struct illixr_hmd
 {
 	struct xrt_device base;

@@ -1,4 +1,4 @@
-// Copyright 2020-2021, The Board of Trustees of the University of Illinois.
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
 // SPDX-License-Identifier: BSL-1.0
 /*!
  * @file
@@ -45,50 +45,6 @@
 #include "illixr_component.h"
 
 #include <cstdlib>
-// Debug file logger - static global
-#ifdef BUILD_WITH_LOGGING
-static FILE *g_debug_log3 = NULL;
-
-static void
-init_debug_log(void)
-{
-	if (g_debug_log3 == NULL) {
-		g_debug_log3 = fopen("D:\\illixr_comp_debug.log", "w");
-		if (g_debug_log3) {
-			fprintf(g_debug_log3, "=== Hand Tracking Debug Log Started ===\n");
-			fflush(g_debug_log3);
-		}
-	}
-}
-
-static void
-log_debug(const char *format, ...)
-{
-	if (g_debug_log3 == NULL) {
-		init_debug_log();
-	}
-
-	if (g_debug_log3) {
-		// Get timestamp
-		time_t now = time(NULL);
-		struct tm *tm_info = localtime(&now);
-		char time_buf[64];
-		strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
-
-		// Write timestamp
-		fprintf(g_debug_log3, "[%s] ", time_buf);
-
-		// Write actual message
-		va_list args;
-		va_start(args, format);
-		vfprintf(g_debug_log3, format, args);
-		va_end(args);
-
-		fprintf(g_debug_log3, "\n");
-		fflush(g_debug_log3); // CRITICAL - force write immediately
-	}
-}
-#endif
 
 using namespace ILLIXR;
 using namespace ILLIXR::vulkan;
@@ -150,10 +106,7 @@ public:
 		if (std::getenv("ILLIXR_USE_HAND_INTERACTIONS") != nullptr) {
 			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
 			hand_interactions_enabled_ = (val == "1" || val == "true" || val == "TRUE");
-        }
-#ifdef BUILD_WITH_LOGGING
-		log_debug("Hand tracking %s", (hand_tracking_enabled_ ? "enabled" : "disabled"));
-#endif
+		}
 	}
 
 	std::atomic<bool> ready = false;
@@ -180,7 +133,7 @@ public:
 	switchboard::reader<pose::palm_poses_pair>             palm_pose_reader_;
 	switchboard::reader<data_format::latency_ping>         latency_reader_;
 
-	BUFFER_TYPE last_pose;
+	BUFFER_TYPE last_pose{};
 };
 
 static illixr_plugin *illixr_plugin_obj = nullptr;

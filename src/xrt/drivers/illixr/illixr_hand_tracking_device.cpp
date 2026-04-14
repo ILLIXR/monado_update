@@ -1,12 +1,11 @@
-// Copyright 2020-2021, The Board of Trustees of the University of Illinois.
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
 // SPDX-License-Identifier: BSL-1.0
 /*!
  * @file
- * @brief  ILLIXR HMD device and XR_EXT_hand_interaction device
+ * @brief  XRT_DEVICE_TYPE_HAND_TRACKER device
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
-#define BUILD_WITH_LOGGING
 #include <assert.h>
 #include <chrono>
 
@@ -80,76 +79,6 @@ ht_log(const char *format, ...)
 
 DEBUG_GET_ONCE_BOOL_OPTION(illixr_spew, "ILLIXR_PRINT_SPEW", false)
 DEBUG_GET_ONCE_BOOL_OPTION(illixr_debug, "ILLIXR_PRINT_DEBUG", false)
-
-/**
- * @brief Convert illixr_hand_joint to xrt_hand_joint_value
- 
-static void
-convert_illixr_joint_to_xrt(const struct illixr_hand_joint *src, struct xrt_hand_joint_value *dst)
-{
-	// Position and orientation
-	dst->relation.pose.position.x = src->position.x;
-	dst->relation.pose.position.y = src->position.y;
-	dst->relation.pose.position.z = src->position.z;
-
-	dst->relation.pose.orientation.x = src->orientation.x;
-	dst->relation.pose.orientation.y = src->orientation.y;
-	dst->relation.pose.orientation.z = src->orientation.z;
-	dst->relation.pose.orientation.w = src->orientation.w;
-
-	// Radius
-	dst->radius = src->radius;
-
-	// Build relation flags from ILLIXR location_flags, whose bit layout now
-	// matches Monado's xrt_space_relation_flags directly:
-	//   Bit 0 (0x01): Orientation valid
-	//   Bit 1 (0x02): Position valid
-	//   Bit 2 (0x04): Linear velocity valid
-	//   Bit 3 (0x08): Angular velocity valid
-	//   Bit 4 (0x10): Orientation tracked (live sensor data, not extrapolated)
-	//   Bit 5 (0x20): Position tracked (live sensor data, not extrapolated)
-	enum xrt_space_relation_flags flags = (enum xrt_space_relation_flags)0;
-
-	if (src->location_flags & 0x01) { // Orientation valid
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT);
-	}
-	if (src->location_flags & 0x02) { // Position valid
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_VALID_BIT);
-	}
-	if (src->location_flags & 0x10) { // Orientation tracked
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
-	}
-	if (src->location_flags & 0x20) { // Position tracked
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
-	}
-
-	// If no pose flags were set but we have data, assume valid and tracked
-	if (flags == 0) {
-		flags = (enum xrt_space_relation_flags)(
-		    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
-		    XRT_SPACE_RELATION_POSITION_TRACKED_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT);
-	}
-
-	// Velocities
-	dst->relation.linear_velocity.x = src->linear_velocity.x;
-	dst->relation.linear_velocity.y = src->linear_velocity.y;
-	dst->relation.linear_velocity.z = src->linear_velocity.z;
-
-	dst->relation.angular_velocity.x = src->angular_velocity.x;
-	dst->relation.angular_velocity.y = src->angular_velocity.y;
-	dst->relation.angular_velocity.z = src->angular_velocity.z;
-
-	// Set velocity validity flags from location_flags bits 2 and 3
-	if (src->location_flags & 0x04) { // Linear velocity valid
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_LINEAR_VELOCITY_VALID_BIT);
-	}
-	if (src->location_flags & 0x08) { // Angular velocity valid
-		flags = (enum xrt_space_relation_flags)(flags | XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
-	}
-
-	dst->relation.relation_flags = flags;
-}*/
-
 
 // clang-format on
 
@@ -243,11 +172,6 @@ illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
 		return;
 	}
 
-	// Convert all joints: position, orientation, radius, linear velocity,
-	// angular velocity, and validity flags
-	//for (int i = 0; i < XRT_HAND_JOINT_COUNT; i++) {
-	//	convert_illixr_joint_to_xrt(&hand_data.joints[i], &out_value->values.hand_joint_set_default[i]);
-	//}
 	// ILLIXR joints are already in world-space so the hand_pose.pose should be identity
 	out_value->hand_pose.pose.orientation.w = 1.0f;
 	out_value->hand_pose.pose.orientation.x = 0.0f;

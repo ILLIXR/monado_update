@@ -1,3 +1,11 @@
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
+// SPDX-License-Identifier: BSL-1.0
+/*!
+ * @file
+ * @brief  ILLIXR frame buffer
+ * @author RSIM Group <illixr@cs.illinois.edu>
+ * @ingroup drv_illixr
+ */
 #pragma once
 
 // Define the framebuffer struct (duplicate from comp_renderer.h, but that's OK)

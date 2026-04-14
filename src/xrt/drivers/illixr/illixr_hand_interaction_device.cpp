@@ -1,12 +1,11 @@
-// Copyright 2020-2021, The Board of Trustees of the University of Illinois.
+// Copyright 2020-2026, The Board of Trustees of the University of Illinois.
 // SPDX-License-Identifier: BSL-1.0
 /*!
  * @file
- * @brief  ILLIXR HMD device and XR_EXT_hand_interaction device
+ * @brief  XRT_DEVICE_EXT_HAND_INTERACTION device
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
-#define BUILD_WITH_LOGGING
 #include <assert.h>
 #include <chrono>
 
@@ -225,32 +224,15 @@ illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
                                                 struct xrt_space_relation *out_relation)
 {
 	(void)at_timestamp_ns;
-	ht_log("Get tracked");
 	struct illixr_hand_interaction_device *hd = illixr_hand_interaction_device(xdev);
-
-	//const enum xrt_space_relation_flags full_flags = (enum xrt_space_relation_flags)(
-	//    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-	//    XRT_SPACE_RELATION_POSITION_VALID_BIT | XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
 
 	// ---- Palm pose -------------------------------------------------------
 	if (name == XRT_INPUT_GENERIC_PALM_POSE) {
-		ht_log("   palm");
 		//struct illixr_palm_pose palm = {};
 		if (!illixr_read_palm_pose(hd->hand, out_relation)) {
 			out_relation->relation_flags = (enum xrt_space_relation_flags)0;
 			return XRT_SUCCESS;
 		}
-		//out_relation->pose.position.x = palm.position.x;
-		//out_relation->pose.position.y = palm.position.y;
-		//out_relation->pose.position.z = palm.position.z;
-		//out_relation->pose.orientation.x = palm.orientation.x;
-		//out_relation->pose.orientation.y = palm.orientation.y;
-		//out_relation->pose.orientation.z = palm.orientation.z;
-		//out_relation->pose.orientation.w = palm.orientation.w;
-		//out_relation->relation_flags = full_flags;
-		ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x",
-		       out_relation->pose.position.x, out_relation->pose.position.y, out_relation->pose.position.z,
-		       out_relation->relation_flags);
 		return XRT_SUCCESS;
 	}
 
@@ -259,24 +241,19 @@ illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
 	switch (name) {
 	case XRT_INPUT_HAND_AIM_POSE:
 		// This is what the hand dots in JumpSim are based on
-		ht_log("   aim");
 		pose_slot = ILLIXR_INTERACTION_AIM;
 		break;
 	case XRT_INPUT_HAND_GRIP_POSE:
-		ht_log("   grip");
 		pose_slot = ILLIXR_INTERACTION_GRIP;
 		break;
 	case XRT_INPUT_HAND_PINCH_POSE:
 		// Pinch does not seem to flow through right
-		ht_log("   pinch");
 		pose_slot = ILLIXR_INTERACTION_PINCH;
 		break;
 	case XRT_INPUT_HAND_POKE_POSE:
-		ht_log("   poke");
 		pose_slot = ILLIXR_INTERACTION_POKE;
 		break;
 	default:
-		ht_log("   ERROR");
 		HD_ERROR(hd, "unknown input name %d", (int)name);
 		return XRT_ERROR_INPUT_UNSUPPORTED;
 	}
@@ -299,14 +276,6 @@ illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
 		return XRT_SUCCESS;
 	}
 	*out_relation = src.relation;
-	/* out_relation->pose.position.x = src.position.x;
-	out_relation->pose.position.y = src.position.y;
-	out_relation->pose.position.z = src.position.z;
-	out_relation->pose.orientation.x = src.orientation.x;
-	out_relation->pose.orientation.y = src.orientation.y;
-	out_relation->pose.orientation.z = src.orientation.z;
-	out_relation->pose.orientation.w = src.orientation.w;
-	out_relation->relation_flags = full_flags;*/
 #ifdef BUILD_WITH_LOGGING
 	ht_log("Hand interaction tracking data returned: (%.4f, %.4f, %.4f) flags=0x%x", src.relation.pose.position.x,
 	       src.relation.pose.position.y, src.relation.pose.position.z, src.relation.relation_flags);
