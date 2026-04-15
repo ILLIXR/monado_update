@@ -220,10 +220,16 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	// Setup inputs: head pose + hand tracking
 	dh->base.inputs[0].name = XRT_INPUT_GENERIC_HEAD_POSE;
 
+		// Read ILLIXR_OVERSCAN from environment variable
+	float scale = 1.0f;
+	if (std::getenv("ILLIXR_OVERSCAN") != nullptr) {
+		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
+	}
+	 
 	// Setup info.
 	struct u_device_simple_info info;
-	info.display.w_pixels = get_server_width();
-	info.display.h_pixels = get_server_height();
+	info.display.w_pixels = (uint32_t)(get_server_width() * scale);
+	info.display.h_pixels = (uint32_t)(get_server_height() * scale);
 	info.display.w_meters = 0.122f;
 	info.display.h_meters = 0.07f;
 	info.lens_horizontal_separation_meters = 0.13f / 2.0f;
@@ -235,12 +241,6 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		DH_ERROR(dh, "Failed to setup basic device info");
 		illixr_hmd_destroy(&dh->base);
 		return NULL;
-	}
-
-	// Read ILLIXR_OVERSCAN from environment variable
-	float scale = 1.0f;
-	if (std::getenv("ILLIXR_OVERSCAN") != nullptr) {
-		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
 	}
 
 	// The server may render at a different FOV than the client.

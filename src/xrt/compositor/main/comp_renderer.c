@@ -1173,177 +1173,6 @@ renderer_fini(struct comp_renderer *r)
  */
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
-/*
-// Static storage for Unity raw image readback
-static struct
-{
-	VkBuffer buffer;
-	VkDeviceMemory memory;
-	uint32_t width;
-	uint32_t height;
-	int eye;
-	bool pending;
-} unity_raw_saves[30];
-static int unity_save_index = 0;
-static int unity_save_count = 0;
-
-static void
-save_unity_raw_swapchain(struct comp_renderer *r,
-                         struct render_gfx *render,
-                         const struct comp_layer *layers,
-                         uint32_t layer_count)
-{
-	static int save_count = 0;
-	struct comp_compositor *c = r->c;
-	if (save_count <= 130 || save_count >= 150) {
-		save_count++;
-		COMP_INFO(c, "ILLIXR: Queued Unity raw not saved %d", save_count);
-		return;
-	}
-
-	struct vk_bundle *vk = &c->base.vk;
-	VkCommandBuffer cmd = render->r->cmd;
-	VkResult ret;
-
-	for (uint32_t i = 0; i < layer_count; i++) {
-		const struct comp_layer *layer = &layers[i];
-
-		if (layer->data.type != XRT_LAYER_PROJECTION && layer->data.type != XRT_LAYER_PROJECTION_DEPTH) {
-			continue;
-		}
-
-		for (uint32_t eye = 0; eye < 2; eye++) {
-			struct comp_swapchain *comp_sc = (struct comp_swapchain *)layer->sc_array[eye];
-			if (!comp_sc)
-				continue;
-
-			uint32_t img_idx = layer->data.type == XRT_LAYER_PROJECTION
-			                       ? layer->data.proj.v[eye].sub.array_index
-			                       : layer->data.depth.v[eye].sub.array_index;
-
-			VkImage unity_image = comp_sc->vkic.images[img_idx].handle;
-			uint32_t width = comp_sc->vkic.info.width;
-			uint32_t height = comp_sc->vkic.info.height;
-
-			// Create staging buffer
-			VkDeviceSize buffer_size = width * height * 4;
-			VkBuffer staging_buffer;
-			VkDeviceMemory staging_memory;
-
-			VkBufferCreateInfo buf_info = {
-			    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			    .size = buffer_size,
-			    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			};
-
-			ret = vk->vkCreateBuffer(vk->device, &buf_info, NULL, &staging_buffer);
-			if (ret != VK_SUCCESS) {
-				COMP_ERROR(c, "Failed to create staging buffer: %d", ret);
-				continue;
-			}
-
-			VkMemoryRequirements mem_reqs;
-			vk->vkGetBufferMemoryRequirements(vk->device, staging_buffer, &mem_reqs);
-
-			// Find host-visible memory
-			uint32_t mem_type_index = UINT32_MAX;
-			VkPhysicalDeviceMemoryProperties mem_props;
-			vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_props);
-
-			for (uint32_t j = 0; j < mem_props.memoryTypeCount; j++) {
-				if ((mem_reqs.memoryTypeBits & (1 << j)) &&
-				    (mem_props.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-					mem_type_index = j;
-					break;
-				}
-			}
-
-			if (mem_type_index == UINT32_MAX) {
-				COMP_ERROR(c, "No host-visible memory type found");
-				vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-				continue;
-			}
-
-			VkMemoryAllocateInfo alloc_info = {
-			    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-			    .allocationSize = mem_reqs.size,
-			    .memoryTypeIndex = mem_type_index,
-			};
-
-			ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &staging_memory);
-			if (ret != VK_SUCCESS) {
-				COMP_ERROR(c, "Failed to allocate staging memory: %d", ret);
-				vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-				continue;
-			}
-
-			ret = vk->vkBindBufferMemory(vk->device, staging_buffer, staging_memory, 0);
-			if (ret != VK_SUCCESS) {
-				COMP_ERROR(c, "Failed to bind buffer memory: %d", ret);
-				vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-				vk->vkFreeMemory(vk->device, staging_memory, NULL);
-				continue;
-			}
-
-			// Transition and copy
-			VkImageMemoryBarrier barrier = {
-			    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-			    .srcAccessMask = 0,
-			    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-			    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			    .image = unity_image,
-			    .subresourceRange =
-			        {
-			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			            .levelCount = 1,
-			            .layerCount = 1,
-			        },
-			};
-
-			vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			                         0, 0, NULL, 0, NULL, 1, &barrier);
-
-			VkBufferImageCopy region = {
-			    .imageSubresource =
-			        {
-			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			            .layerCount = 1,
-			        },
-			    .imageExtent = {width, height, 1},
-			};
-
-			vk->vkCmdCopyImageToBuffer(cmd, unity_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			                           staging_buffer, 1, &region);
-
-			// Transition back
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			barrier.dstAccessMask = 0;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
-			                         &barrier);
-
-			// Save for readback (static storage - hacky but simple)
-			// At the end, instead of local static vars:
-			unity_raw_saves[unity_save_index].buffer = staging_buffer;
-			unity_raw_saves[unity_save_index].memory = staging_memory;
-			unity_raw_saves[unity_save_index].width = width;
-			unity_raw_saves[unity_save_index].height = height;
-			unity_raw_saves[unity_save_index].eye = eye;
-			unity_raw_saves[unity_save_index].pending = true;
-			unity_save_index++;
-    
-
-			COMP_INFO(c, "ILLIXR: Queued Unity raw save for eye %d", eye);
-		}
-
-		save_count++;
-		break;
-	}
-}*/
 
 static void create_illixr_depth_rg_images(struct comp_renderer* r, uint32_t width, uint32_t height) {
 	struct comp_compositor *c = r->c;
@@ -1781,8 +1610,183 @@ create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, 
 	COMP_INFO(c, "Created %d depth downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 #endif
+/*
+#ifdef USE_MONADO_ILLIXR_DRIVER
+static struct
+{
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+	uint32_t width;
+	uint32_t height;
+	uint32_t eye;
+	int frame;
+	bool pending;
+} scratch_saves[6]; // 3 frames × 2 eyes
+static int scratch_save_index = 0;
 
- /*!
+static void
+queue_scratch_image_save(struct comp_renderer *r,
+                         struct render_gfx *render,
+                         VkImage src_image,
+                         VkImageLayout src_layout,
+                         uint32_t width,
+                         uint32_t height,
+                         uint32_t eye,
+                         int frame)
+{
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+	VkCommandBuffer cmd = render->r->cmd;
+	VkResult ret;
+
+	if (scratch_save_index >= 6)
+		return;
+
+	VkDeviceSize buffer_size = (VkDeviceSize)width * height * 4;
+
+	VkBufferCreateInfo buf_info = {
+	    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+	    .size = buffer_size,
+	    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	};
+
+	VkBuffer staging_buffer;
+	ret = vk->vkCreateBuffer(vk->device, &buf_info, NULL, &staging_buffer);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(c, "scratch dump: vkCreateBuffer failed: %d", ret);
+		return;
+	}
+
+	VkMemoryRequirements mem_reqs;
+	vk->vkGetBufferMemoryRequirements(vk->device, staging_buffer, &mem_reqs);
+
+	VkPhysicalDeviceMemoryProperties mem_props;
+	vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_props);
+
+	uint32_t mem_type_index = UINT32_MAX;
+	for (uint32_t j = 0; j < mem_props.memoryTypeCount; j++) {
+		if ((mem_reqs.memoryTypeBits & (1u << j)) &&
+		    (mem_props.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+			mem_type_index = j;
+			break;
+		}
+	}
+
+	if (mem_type_index == UINT32_MAX) {
+		COMP_ERROR(c, "scratch dump: no host-visible memory type");
+		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
+		return;
+	}
+
+	VkMemoryAllocateInfo alloc_info = {
+	    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+	    .allocationSize = mem_reqs.size,
+	    .memoryTypeIndex = mem_type_index,
+	};
+
+	VkDeviceMemory staging_memory;
+	ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &staging_memory);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(c, "scratch dump: vkAllocateMemory failed: %d", ret);
+		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
+		return;
+	}
+
+	vk->vkBindBufferMemory(vk->device, staging_buffer, staging_memory, 0);
+
+	// Transition src to TRANSFER_SRC
+	VkImageMemoryBarrier barrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+	    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+	    .oldLayout = src_layout,
+	    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	    .image = src_image,
+	    .subresourceRange =
+	        {
+	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	            .levelCount = 1,
+	            .layerCount = 1,
+	        },
+	};
+
+	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+	                         0, NULL, 0, NULL, 1, &barrier);
+
+	VkBufferImageCopy region = {
+	    .imageSubresource =
+	        {
+	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	            .layerCount = 1,
+	        },
+	    .imageExtent = {width, height, 1},
+	};
+
+	vk->vkCmdCopyImageToBuffer(cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
+
+	// Transition src back
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = src_layout;
+
+	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+	                         0, NULL, 0, NULL, 1, &barrier);
+
+	scratch_saves[scratch_save_index].buffer = staging_buffer;
+	scratch_saves[scratch_save_index].memory = staging_memory;
+	scratch_saves[scratch_save_index].width = width;
+	scratch_saves[scratch_save_index].height = height;
+	scratch_saves[scratch_save_index].eye = eye;
+	scratch_saves[scratch_save_index].frame = frame;
+	scratch_saves[scratch_save_index].pending = true;
+	scratch_save_index++;
+
+	COMP_INFO(c, "scratch dump: queued eye=%u frame=%d (%ux%u)", eye, frame, width, height);
+}
+
+static void
+flush_scratch_image_saves(struct comp_renderer *r)
+{
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+
+	for (int i = 0; i < scratch_save_index; i++) {
+		if (!scratch_saves[i].pending)
+			continue;
+
+		void *data;
+		vk->vkMapMemory(vk->device, scratch_saves[i].memory, 0, VK_WHOLE_SIZE, 0, &data);
+
+		char filename[64];
+		snprintf(filename, sizeof(filename), "D:/imgs/scratch_eye%u_frame%d.ppm", scratch_saves[i].eye,
+		         scratch_saves[i].frame);
+
+		FILE *f = fopen(filename, "wb");
+		if (f) {
+			uint32_t w = scratch_saves[i].width;
+			uint32_t h = scratch_saves[i].height;
+			fprintf(f, "P6\n%u %u\n255\n", w, h);
+			uint8_t *px = (uint8_t *)data;
+			for (uint32_t p = 0; p < w * h; p++) {
+				fwrite(px, 1, 3, f); // R,G,B (skip A)
+				px += 4;
+			}
+			fclose(f);
+			COMP_INFO(c, "scratch dump: saved %s", filename);
+		} else {
+			COMP_ERROR(c, "scratch dump: could not open %s", filename);
+		}
+
+		vk->vkUnmapMemory(vk->device, scratch_saves[i].memory);
+		vk->vkFreeMemory(vk->device, scratch_saves[i].memory, NULL);
+		vk->vkDestroyBuffer(vk->device, scratch_saves[i].buffer, NULL);
+		scratch_saves[i].pending = false;
+	}
+}
+#endif
+*/
+/*!
  * @pre render_gfx_init(render, &c->nr)
  */
 static XRT_CHECK_RESULT VkResult
@@ -1894,8 +1898,8 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Read MV ring-buffer index from shared memory (written by hook DLL after
 	// each xrReleaseSwapchainImage for the MV swapchain).
-	if (g_illixr_shmem == NULL)
-		illixr_shmem_open();
+	//if (g_illixr_shmem == NULL)
+	//	illixr_shmem_open();
 
 	uint32_t mv_ring_index = 0;
 	bool mv_shmem_valid = false;
@@ -1993,132 +1997,32 @@ dispatch_graphics(struct comp_renderer *r,
 	// Start the graphics pipeline.
 	render_gfx_begin(render);
 
-#ifdef USE_MONADO_ILLIXR_DRIVER
-	// ILLIXR: Save Unity's RAW swapchain (before any processing)
-	//if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
-	//	save_unity_raw_swapchain(r, render, layers, layer_count);
-	//}
-	// ILLIXR: DEBUG - Save Unity's submitted swapchain to disk
-	/* if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && layer_count > 0) {
-		static int save_counter = 0;
-
-		if (save_counter < 100) { // Save first 10 frames
-			for (uint32_t i = 0; i < layer_count; i++) {
-				const struct comp_layer *layer = &layers[i];
-
-				if (layer->data.type == XRT_LAYER_PROJECTION ||
-				    layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
-
-					for (uint32_t eye = 0; eye < 2; eye++) {
-						struct comp_swapchain *comp_sc =
-						    (struct comp_swapchain *)layer->sc_array[eye];
-
-						if (comp_sc) {
-							uint32_t img_idx;
-							if (layer->data.type == XRT_LAYER_PROJECTION) {
-								img_idx = layer->data.proj.v[eye].sub.array_index;
-							} else {
-								img_idx = layer->data.depth.v[eye].sub.array_index;
-							}
-
-							VkImage unity_image = comp_sc->vkic.images[img_idx].handle;
-
-							//COMP_INFO(
-							//    c,
-							//    "ILLIXR: Unity submitted image eye=%d: %p, "
-							//    "rect=(%d,%d,%u,%u)",
-							//    eye, (void *)unity_image,
-							//    layer->data.type == XRT_LAYER_PROJECTION
-							//        ? layer->data.proj.v[eye].sub.rect.offset.w
-							//        : layer->data.depth.v[eye].sub.rect.offset.w,
-							//    layer->data.type == XRT_LAYER_PROJECTION
-							//        ? layer->data.proj.v[eye].sub.rect.offset.h
-							//        : layer->data.depth.v[eye].sub.rect.offset.h,
-							//    layer->data.type == XRT_LAYER_PROJECTION
-							//        ? layer->data.proj.v[eye].sub.rect.extent.w
-							//        : layer->data.depth.v[eye].sub.rect.extent.w,
-							//    layer->data.type == XRT_LAYER_PROJECTION
-							//        ? layer->data.proj.v[eye].sub.rect.extent.h
-							//        : layer->data.depth.v[eye]
-							//              .sub.rect.extent.h);
-						}
-					}
-
-					save_counter++;
-					break;
-				}
-			}
-		}
-	}*/
-#endif
-#ifdef USE_MONADO_ILLIXR_DRIVER
-	/* // ILLIXR: Clear scratch images before composition to eliminate triangular artifacts
-	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
-		for (uint32_t eye = 0; eye < 2; eye++) {
-			uint32_t scratch_index = crss->views[eye].index;
-			struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
-			struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
-
-			//COMP_INFO(c, "ILLIXR: Clearing scratch eye=%d, image=%p, size=%ux%u", // ADD THIS
-			//          eye, (void *)scratch_image->image, scratch_view->info.width,
-			//          scratch_view->info.height);
-
-			// Transition to TRANSFER_DST for clearing
-			VkImageMemoryBarrier barrier = {
-			    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-			    .srcAccessMask = 0,
-			    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			    .image = scratch_image->image,
-			    .subresourceRange =
-			        {
-			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			            .baseMipLevel = 0,
-			            .levelCount = 1,
-			            .baseArrayLayer = 0,
-			            .layerCount = 1,
-			        },
-			};
-
-			vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-			                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-
-			// Clear to black
-			VkClearColorValue clear_color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-			VkImageSubresourceRange range = {
-			    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			    .baseMipLevel = 0,
-			    .levelCount = 1,
-			    .baseArrayLayer = 0,
-			    .layerCount = 1,
-			};
-
-			vk->vkCmdClearColorImage(render->r->cmd, scratch_image->image,
-			                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
-			//COMP_INFO(c, "ILLIXR: Clear command recorded for eye=%d", eye);
-			// Transition to COLOR_ATTACHMENT for rendering
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1,
-			                         &barrier);
-		}
-		//COMP_INFO(c, "ILLIXR: All scratch clears recorded");
-		
-	}*/
-#endif
-
 	// Build the command buffer.
 	comp_render_gfx_dispatch(
 	    render,
 	    filtered_layers,
 	    filtered_count,
 	    &data);
+/*
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
+		static int dump_frame = 0;
+		if (dump_frame >=200 && dump_frame < 205) {
+			for (uint32_t eye = 0; eye < 2; eye++) {
+				uint32_t scratch_index = crss->views[eye].index;
+				struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
+				struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
 
+				queue_scratch_image_save(
+				    r, render, scratch_image->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				    scratch_view->info.width, scratch_view->info.height, eye, dump_frame);
+			}
+		}
+		dump_frame++;
+
+	}
+#endif
+*/
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && !illixr_offload_frames()) {
 		//COMP_INFO(c, "ILLIXR: Acquiring buffer for encoding");
@@ -2462,11 +2366,11 @@ dispatch_graphics(struct comp_renderer *r,
                                 // ILLIXR: Extract motion vectors from the MV swapchain via
 			        // shared memory ring index.
 				if (mv_shmem_valid && g_illixr_mv_sc != NULL) {
-					if (eye == 0) {
-						COMP_WARN(c, "ILLIXR: MV shmem valid: ring=%u seq=%u", mv_ring_index,
-						          g_illixr_last_seq);
+					//if (eye == 0) {
+						//COMP_WARN(c, "ILLIXR: MV shmem valid: ring=%u seq=%u", mv_ring_index,
+						//          g_illixr_last_seq);
 						
-					}
+					//}
 					{
 						uint32_t mv_img_idx = mv_ring_index;
 						struct comp_swapchain *mv_comp_sc = g_illixr_mv_sc;
@@ -2562,8 +2466,8 @@ dispatch_graphics(struct comp_renderer *r,
 					}
 				} else {
 					if (eye == 0) {
-						COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
-						          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
+						//COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
+						//          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
 					}
 
 				}
@@ -2848,6 +2752,11 @@ comp_renderer_draw(struct comp_renderer *r)
 	// Hardcoded for now.
 	const uint32_t view_count = c->nr.view_count;
 	enum comp_target_fov_source fov_source = COMP_TARGET_FOV_SOURCE_DISTORTION;
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (strcmp(c->xdev->str, "ILLIXR") == 0) {
+		fov_source = COMP_TARGET_FOV_SOURCE_DEVICE_VIEWS;
+	}
+#endif
 
 	// For scratch image debugging.
 	struct comp_render_scratch_state crss;
@@ -2942,7 +2851,9 @@ comp_renderer_draw(struct comp_renderer *r)
 	 * This is done after a swap so isn't time critical.
 	 */
 	renderer_wait_queue_idle(r);
-
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	//flush_scratch_image_saves(r);
+#endif
 	// Finalize the scratch images, send to debug UI if active.
 	scratch_get_fini(&crss, r, view_count);
 
