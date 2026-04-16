@@ -1898,8 +1898,8 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Read MV ring-buffer index from shared memory (written by hook DLL after
 	// each xrReleaseSwapchainImage for the MV swapchain).
-	//if (g_illixr_shmem == NULL)
-	//	illixr_shmem_open();
+	if (g_illixr_shmem == NULL)
+		illixr_shmem_open();
 
 	uint32_t mv_ring_index = 0;
 	bool mv_shmem_valid = false;
@@ -2466,8 +2466,8 @@ dispatch_graphics(struct comp_renderer *r,
 					}
 				} else {
 					if (eye == 0) {
-						//COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
-						//          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
+						COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
+						          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
 					}
 
 				}

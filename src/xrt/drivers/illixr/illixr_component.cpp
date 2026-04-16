@@ -270,10 +270,15 @@ illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_
 
 	const pose::hand_interaction_poses &src = interaction_data->hands.at(side);
 
-	out_data->poses[ILLIXR_INTERACTION_AIM].relation = src.at(pose::AIM);
-	out_data->poses[ILLIXR_INTERACTION_GRIP].relation = src.at(pose::GRIP);
-	out_data->poses[ILLIXR_INTERACTION_PINCH].relation = src.at(pose::PINCH);
-	out_data->poses[ILLIXR_INTERACTION_POKE].relation = src.at(pose::POKE);
+	const pose::interaction_pose_type type_enums[ILLIXR_NUM_INTERACTION_POSES] = {pose::AIM, pose::GRIP,
+	                                                                              pose::PINCH, pose::POKE};
+	for (int i = 0; i < ILLIXR_NUM_INTERACTION_POSES; i++) {
+		const pose::hand_interaction_pose &p = src.at(type_enums[i]);
+		out_data->poses[i].relation = p;
+		out_data->poses[i].value = p.value;
+		out_data->poses[i].ready = p.ready;
+		out_data->poses[i].valid = p.valid();
+	}
 	out_data->valid = src.is_valid();
 	return out_data->valid;
 }
