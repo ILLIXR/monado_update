@@ -19,9 +19,19 @@
 #include "util/u_string_list.h"
 #include "xrt/xrt_defines.h"
 
+#include "illixr/data_format/hmd_config.hpp"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Block until headset_config has been received from the client, then
+ *        return a copy of it. Timeout is in milliseconds; pass 0 to wait
+ *        indefinitely. Returns a config with valid=false on timeout.
+ */
+struct hmd_config
+illixr_wait_for_headset_config(uint32_t timeout_ms);
 
 /*
  *

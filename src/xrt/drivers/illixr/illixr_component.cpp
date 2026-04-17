@@ -78,6 +78,7 @@ public:
 	    , hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")}
 	    , palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
 	    , latency_reader_{sb->get_reader<latency_ping>("latency_ping")}
+	    , hmd_config_reader_{sb->get_reader<hmd_config_data>("hmd_config")}
 	{
 		sb_timewarp = pb_->lookup_impl<timewarp>();
 
@@ -132,6 +133,7 @@ public:
 	switchboard::reader<pose::hand_interaction_poses_pair> hand_interaction_reader_;
 	switchboard::reader<pose::palm_poses_pair>             palm_pose_reader_;
 	switchboard::reader<data_format::latency_ping>         latency_reader_;
+	switchboard::reader<data_format::hmd_config_data>      hmd_config_reader_;
 
 	BUFFER_TYPE last_pose{};
 };
@@ -151,6 +153,52 @@ illixr_monado_wait_for_init(void)
 {
 	while (!_ds_ready) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+}
+
+extern "C" struct hmd_config
+illixr_wait_for_headset_config(uint32_t timeout_ms)
+{
+	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
+
+	struct hmd_config result = {};
+	result.recommended_image_width = 0;   // force to 0 as it is used to indicate valid data
+	const auto start = std::chrono::steady_clock::now();
+	const bool no_limit = (timeout_ms == 0);
+
+	for (;;) {
+		auto cfg = illixr_plugin_obj->hmd_config_reader_.get_ro_nullable();
+		if (cfg) {
+			result.recommended_image_width = cfg->config.recommended_image_width;
+			result.recommended_image_height = cfg->config.recommended_image_height;
+			for (int eye = 0; eye < 2; eye++) {
+				result.fov_angle_left[eye] = cfg->config.fov_angle_left[eye];
+				result.fov_angle_right[eye] = cfg->config.fov_angle_right[eye];
+				result.fov_angle_up[eye] = cfg->config.fov_angle_up[eye];
+				result.fov_angle_down[eye] = cfg->config.fov_angle_down[eye];
+			}
+			printf(
+			    "[ILLIXR] headset_config received: %ux%u "
+			    "eye0 fov=(%.3f,%.3f,%.3f,%.3f) "
+			    "eye1 fov=(%.3f,%.3f,%.3f,%.3f)\n",
+			    result.recommended_image_width, result.recommended_image_height, result.fov_angle_left[0],
+			    result.fov_angle_right[0], result.fov_angle_up[0], result.fov_angle_down[0],
+			    result.fov_angle_left[1], result.fov_angle_right[1], result.fov_angle_up[1],
+			    result.fov_angle_down[1]);
+			return result;
+		}
+
+		if (!no_limit) {
+			auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			                      std::chrono::steady_clock::now() - start)
+			                      .count();
+			if (elapsed_ms >= static_cast<long>(timeout_ms)) {
+				printf("[ILLIXR] illixr_wait_for_headset_config: timed out after %u ms\n", timeout_ms);
+				return result;
+			}
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 }
 

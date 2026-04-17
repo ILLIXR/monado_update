@@ -220,20 +220,62 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	// Setup inputs: head pose + hand tracking
 	dh->base.inputs[0].name = XRT_INPUT_GENERIC_HEAD_POSE;
 
-		// Read ILLIXR_OVERSCAN from environment variable
+	// start ILLIXR runtime
+	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
+		DH_ERROR(dh, "Failed to load ILLIXR Runtime");
+		illixr_hmd_destroy(&dh->base);
+		return NULL;
+	}
+
+	// Read ILLIXR_OVERSCAN from environment variable
 	float scale = 1.0f;
 	if (std::getenv("ILLIXR_OVERSCAN") != nullptr) {
 		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
 	}
-	 
+
+	// Attempt to receive real display parameters from the headset client.
+	// In offload mode this message arrives shortly after the client session
+	// starts. In non-offload mode (or if the client is slow) we fall back to
+	// the environment variable / compile-time defaults.
+	// Block up to 10 s for the headset to connect and send its config.
+	struct hmd_config hmd_c = illixr_wait_for_headset_config(10000);
+
+	if (hmd_c.recommended_image_width == 0) {
+		hmd_c.recommended_image_width = (uint32_t)(get_server_width() * scale);
+		hmd_c.recommended_image_height = (uint32_t)(get_server_height() * scale);
+		for (int eye = 0; eye < 2; eye++) {
+			hmd_c.fov_angle_left[eye] = scale * ILLIXR::server_params::fov_left[eye];
+			hmd_c.fov_angle_right[eye] = scale * ILLIXR::server_params::fov_right[eye];
+			hmd_c.fov_angle_up[eye] = scale * ILLIXR::server_params::fov_up[eye];
+			hmd_c.fov_angle_down[eye] = scale * ILLIXR::server_params::fov_down[eye];
+		}
+	} else {
+		hmd_c.recommended_image_width = (uint32_t)(hmd_c.recommended_image_width * scale);
+		hmd_c.recommended_image_height = (uint32_t)(hmd_c.recommended_image_height * scale);
+		for (int eye = 0; eye < 2; eye++) {
+			hmd_c.fov_angle_left[eye] *= scale;
+			hmd_c.fov_angle_right[eye] *= scale;
+			hmd_c.fov_angle_up[eye] *= scale;
+			hmd_c.fov_angle_down[eye] *= scale;
+		}
+
+	}
+
 	// Setup info.
 	struct u_device_simple_info info;
-	info.display.w_pixels = (uint32_t)(get_server_width() * scale);
-	info.display.h_pixels = (uint32_t)(get_server_height() * scale);
+	info.display.w_pixels = hmd_c.recommended_image_width;
+	info.display.h_pixels = hmd_c.recommended_image_height;
+	// Quest 3 params
+	info.display.w_meters = 0.0437f;                     // per-eye panel width: ~43.7mm
+	info.display.h_meters = 0.0467f;                     // per-eye panel height: ~46.7mm
+	info.lens_horizontal_separation_meters = 0.0635f;    // Quest 3 lens center-to-center: ~63.5mm
+	info.lens_vertical_position_meters = 0.0467f / 2.0f; // lens centered vertically: ~23.4mm
+	/*
 	info.display.w_meters = 0.122f;
 	info.display.h_meters = 0.07f;
 	info.lens_horizontal_separation_meters = 0.13f / 2.0f;
 	info.lens_vertical_position_meters = 0.07f / 2.0f;
+	*/
 	info.fov[0] = 85.0f * (M_PI / 180.0f);
 	info.fov[1] = 85.0f * (M_PI / 180.0f);
 
@@ -245,15 +287,10 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 
 	// The server may render at a different FOV than the client.
 	for (int eye = 0; eye < 2; eye++) {
-		float fov_left = scale * ILLIXR::server_params::fov_left[eye];
-		float fov_right = scale * ILLIXR::server_params::fov_right[eye];
-		float fov_up = scale * ILLIXR::server_params::fov_up[eye];
-		float fov_down = scale * ILLIXR::server_params::fov_down[eye];
-
-		dh->base.hmd->distortion.fov[eye].angle_left = fov_left;
-		dh->base.hmd->distortion.fov[eye].angle_right = fov_right;
-		dh->base.hmd->distortion.fov[eye].angle_up = fov_up;
-		dh->base.hmd->distortion.fov[eye].angle_down = fov_down;
+		dh->base.hmd->distortion.fov[eye].angle_left = hmd_c.fov_angle_left[eye];
+		dh->base.hmd->distortion.fov[eye].angle_right = hmd_c.fov_angle_right[eye];
+		dh->base.hmd->distortion.fov[eye].angle_up = hmd_c.fov_angle_up[eye];
+		dh->base.hmd->distortion.fov[eye].angle_down = hmd_c.fov_angle_down[eye];
 	}
 
 	// Setup variable tracker.
@@ -265,12 +302,6 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		u_distortion_mesh_set_none(&dh->base);
 	}
 
-	// start ILLIXR runtime
-	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
-		DH_ERROR(dh, "Failed to load ILLIXR Runtime");
-		illixr_hmd_destroy(&dh->base);
-		return NULL;
-	}
 
 	printf("[ILLIXR] ==========================================\n");
 	printf("[ILLIXR] HMD device created successfully\n");
