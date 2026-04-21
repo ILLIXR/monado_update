@@ -329,7 +329,7 @@ calc_viewport_data(struct comp_renderer *r,
 		 *   l_viewport_data.w *= 2;
 		 *   r_viewport_data.w *= 2;
 		 */
-		out_viewport_data[i].w *= 2;
+		//out_viewport_data[i].w *= 2;
 #endif
 	}
 }
@@ -1610,7 +1610,135 @@ create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, 
 	COMP_INFO(c, "Created %d depth downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 #endif
-/*
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+/* static struct
+{
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+	uint32_t width;
+	uint32_t height;
+	int eye;
+	bool pending;
+} unity_raw_saves[4]; // 2 eyes × up to 2 frames
+static int unity_save_index = 0;
+static int unity_save_count = 0;
+static void
+queue_unity_raw_save(
+    struct comp_renderer *r, struct render_gfx *render, VkImage src_image, uint32_t width, uint32_t height, int eye)
+{
+	if (unity_save_index >= 4)
+		return;
+
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
+	VkCommandBuffer cmd = render->r->cmd;
+	VkResult ret;
+
+	VkDeviceSize buffer_size = (VkDeviceSize)width * height * 4;
+
+	VkBufferCreateInfo buf_info = {
+	    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+	    .size = buffer_size,
+	    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	};
+
+	VkBuffer staging_buffer;
+	ret = vk->vkCreateBuffer(vk->device, &buf_info, NULL, &staging_buffer);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(c, "unity raw save: vkCreateBuffer failed");
+		return;
+	}
+
+	VkMemoryRequirements mem_reqs;
+	vk->vkGetBufferMemoryRequirements(vk->device, staging_buffer, &mem_reqs);
+
+	VkPhysicalDeviceMemoryProperties mem_props;
+	vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_props);
+
+	uint32_t mem_type = UINT32_MAX;
+	for (uint32_t j = 0; j < mem_props.memoryTypeCount; j++) {
+		if ((mem_reqs.memoryTypeBits & (1u << j)) &&
+		    (mem_props.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+			mem_type = j;
+			break;
+		}
+	}
+
+	if (mem_type == UINT32_MAX) {
+		COMP_ERROR(c, "unity raw save: no host-visible memory");
+		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
+		return;
+	}
+
+	VkMemoryAllocateInfo alloc_info = {
+	    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+	    .allocationSize = mem_reqs.size,
+	    .memoryTypeIndex = mem_type,
+	};
+
+	VkDeviceMemory staging_memory;
+	ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &staging_memory);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(c, "unity raw save: vkAllocateMemory failed");
+		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
+		return;
+	}
+
+	vk->vkBindBufferMemory(vk->device, staging_buffer, staging_memory, 0);
+	COMP_INFO(r->c, "Unity swapchain eye=%d: image=%p size=%ux%u img_idx=%u", eye, (void *)src_image, width, height,
+	          0);
+	// Transition to TRANSFER_SRC
+	VkImageMemoryBarrier barrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+	    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+	    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	    .image = src_image,
+	    .subresourceRange =
+	        {
+	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	            .levelCount = 1,
+	            .layerCount = 1,
+	        },
+	};
+
+	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+	                         0, NULL, 0, NULL, 1, &barrier);
+
+	VkBufferImageCopy region = {
+	    .imageSubresource =
+	        {
+	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	            .layerCount = 1,
+	        },
+	    .imageExtent = {width, height, 1},
+	};
+
+	vk->vkCmdCopyImageToBuffer(cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
+
+	// Transition back
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+	                         0, NULL, 0, NULL, 1, &barrier);
+
+	unity_raw_saves[unity_save_index].buffer = staging_buffer;
+	unity_raw_saves[unity_save_index].memory = staging_memory;
+	unity_raw_saves[unity_save_index].width = width;
+	unity_raw_saves[unity_save_index].height = height;
+	unity_raw_saves[unity_save_index].eye = eye;
+	unity_raw_saves[unity_save_index].pending = true;
+	unity_save_index++;
+
+	COMP_INFO(c, "unity raw save: queued eye=%d (%ux%u)", eye, width, height);
+}
+#endif
+
 #ifdef USE_MONADO_ILLIXR_DRIVER
 static struct
 {
@@ -1783,9 +1911,9 @@ flush_scratch_image_saves(struct comp_renderer *r)
 		vk->vkDestroyBuffer(vk->device, scratch_saves[i].buffer, NULL);
 		scratch_saves[i].pending = false;
 	}
-}
+}*/
 #endif
-*/
+
 /*!
  * @pre render_gfx_init(render, &c->nr)
  */
@@ -1809,7 +1937,7 @@ dispatch_graphics(struct comp_renderer *r,
 	uint32_t layer_count = c->base.layer_accum.layer_count;
 	bool fast_path = c->base.frame_params.one_projection_layer_fast_path;
 #ifdef USE_MONADO_ILLIXR_DRIVER
-	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
+	/* if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
 		//COMP_DEBUG(c, "ILLIXR: Frame with %d layers", layer_count);
 		for (uint32_t i = 0; i < layer_count; i++) {
 			if (layers[i].data.type == XRT_LAYER_PROJECTION) {
@@ -1818,8 +1946,10 @@ dispatch_graphics(struct comp_renderer *r,
 			//	COMP_DEBUG(c, "  Layer %d: PROJECTION_DEPTH (color + depth)", i);
 			}
 		}
-	}
-	bool do_timewarp = illixr_offload_frames() && !c->debug.atw_off;
+	}*/
+
+	//bool do_timewarp = illixr_offload_frames() && !c->debug.atw_off;
+	bool do_timewarp = false;
 #else
 	bool do_timewarp = !c->debug.atw_off;
 #endif
@@ -1860,7 +1990,21 @@ dispatch_graphics(struct comp_renderer *r,
 			break;
 		}
 	}
-
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (proj_layer != NULL) {
+		static bool size_logged = false;
+		if (!size_logged) {
+			for (uint32_t eye = 0; eye < 2; eye++) {
+				struct comp_swapchain *comp_sc = (struct comp_swapchain *)proj_layer->sc_array[eye];
+				if (comp_sc) {
+					COMP_WARN(c, "ILLIXR Unity swapchain eye=%u: %ux%u", eye,
+					          comp_sc->vkic.info.width, comp_sc->vkic.info.height);
+				}
+			}
+			size_logged = true;
+		}
+	}
+#endif
 	// ILLIXR: Scan layers for the sentinel quad (position.z < -9998).
 	// Purpose: capture g_illixr_mv_sc on the first arrival.
 	// The sentinel is filtered out of the display layer list so it is not
@@ -1923,10 +2067,44 @@ dispatch_graphics(struct comp_renderer *r,
 			g_illixr_last_seq = seq_before;
 		}
 	} else if (g_illixr_mv_sc == NULL) {
-		COMP_WARN(c, "ILLIXR: g_illixr_mv_sc still NULL - waiting for sentinel quad layer from Unity");
+		//COMP_WARN(c, "ILLIXR: g_illixr_mv_sc still NULL - waiting for sentinel quad layer from Unity");
 	}
 
 	if (proj_layer) {
+
+
+			static bool rect_logged = false;
+			if (!rect_logged) {
+				for (uint32_t eye = 0; eye < 2; eye++) {
+					if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
+						struct xrt_layer_projection_view_data *vd =
+						    &proj_layer->data.proj.v[eye];
+						COMP_WARN(c,
+						          "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
+						          "swapchain=(%u,%u)",
+						          eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h,
+						          vd->sub.rect.extent.w, vd->sub.rect.extent.h,
+						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
+						              ->vkic.info.width,
+						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
+						              ->vkic.info.height);
+					} else {
+						struct xrt_layer_projection_view_data *vd =
+						    &proj_layer->data.depth.v[eye];
+						COMP_WARN(c,
+						          "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
+						          "swapchain=(%u,%u)",
+						          eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h,
+						          vd->sub.rect.extent.w, vd->sub.rect.extent.h,
+						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
+						              ->vkic.info.width,
+						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
+						              ->vkic.info.height);
+					}
+				}
+				rect_logged = true;
+			}
+		
 		struct xrt_pose left_pose;
 		struct xrt_pose right_pose;
 
@@ -1996,7 +2174,26 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Start the graphics pipeline.
 	render_gfx_begin(render);
-
+	/*
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && proj_layer != NULL) {
+		static int unity_dump_frame = 0;
+		unity_dump_frame++;
+		if (unity_dump_frame >= 500 && unity_dump_frame < 502) {
+			for (uint32_t eye = 0; eye < 2; eye++) {
+				struct comp_swapchain *comp_sc = (struct comp_swapchain *)proj_layer->sc_array[eye];
+				if (comp_sc) {
+					uint32_t img_idx = (proj_layer->data.type == XRT_LAYER_PROJECTION)
+					                       ? proj_layer->data.proj.v[eye].sub.array_index
+					                       : proj_layer->data.depth.v[eye].sub.array_index;
+					VkImage unity_image = comp_sc->vkic.images[img_idx].handle;
+					queue_unity_raw_save(r, render, unity_image, comp_sc->vkic.info.width,
+					                     comp_sc->vkic.info.height, (int)eye);
+				}
+			}
+		}
+	}
+#endif*/
 	// Build the command buffer.
 	comp_render_gfx_dispatch(
 	    render,
@@ -2466,8 +2663,8 @@ dispatch_graphics(struct comp_renderer *r,
 					}
 				} else {
 					if (eye == 0) {
-						COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
-						          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
+						//COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
+						//          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
 					}
 
 				}
@@ -2500,8 +2697,8 @@ dispatch_graphics(struct comp_renderer *r,
 
 		// Wait for ALL GPU work to complete before releasing to encoder
 		vk->vkQueueWaitIdle(vk->queue);
-/*
-		for (int i = 0; i < unity_save_index; i++) {
+
+		/* for (int i = 0; i < unity_save_index; i++) {
 			if (!unity_raw_saves[i].pending)
 				continue;
 
@@ -2514,7 +2711,7 @@ dispatch_graphics(struct comp_renderer *r,
 
 			// Save to PPM in CURRENT WORKING DIRECTORY
 			char filename[256];
-			snprintf(filename, sizeof(filename), "unity_raw_%03d_eye%d.ppm", unity_save_count,
+			snprintf(filename, sizeof(filename), "D:/unity_raw_%03d_eye%d.ppm", unity_save_count,
 			         unity_raw_saves[i].eye);
 
 			FILE *f = fopen(filename, "wb");
@@ -2545,8 +2742,8 @@ dispatch_graphics(struct comp_renderer *r,
 		if (unity_save_index > 0) {
 			unity_save_count++;
 			unity_save_index = 0; // Reset for next frame
-		}
-*/
+		}*/
+
 		//COMP_INFO(c, "ILLIXR: GPU work complete, releasing buffer for encoding");
 
 		// Extract poses from projection layer
@@ -2610,7 +2807,11 @@ dispatch_compute(struct comp_renderer *r,
 	const struct comp_layer *layers = c->base.layer_accum.layers;
 	uint32_t layer_count = c->base.layer_accum.layer_count;
 	bool fast_path = c->base.frame_params.one_projection_layer_fast_path;
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	bool do_timewarp = false;
+#else
 	bool do_timewarp = !c->debug.atw_off;
+#endif
 
 	// Device view information.
 	struct xrt_fov fovs[XRT_MAX_VIEWS];

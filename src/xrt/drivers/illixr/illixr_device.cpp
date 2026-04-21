@@ -177,6 +177,21 @@ illixr_rt_launch(struct illixr_hmd *dh, const char *path, const char *comp)
 	return 0;
 }
 
+static bool
+illixr_compute_distortion(struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *result)
+{
+	// True identity: R/G/B all map to the same UV, which equals the
+	// input UV directly. This makes the distortion mesh a flat quad
+	// that covers exactly the full viewport with no warping.
+	result->r.x = u;
+	result->r.y = v;
+	result->g.x = u;
+	result->g.y = v;
+	result->b.x = u;
+	result->b.y = v;
+	return true;
+}
+
 extern "C" struct xrt_device *
 illixr_hmd_create(const char *path_in, const char *comp_in)
 {
@@ -220,7 +235,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	// Setup inputs: head pose + hand tracking
 	dh->base.inputs[0].name = XRT_INPUT_GENERIC_HEAD_POSE;
 
-		// Read ILLIXR_OVERSCAN from environment variable
+	// Read ILLIXR_OVERSCAN from environment variable
 	float scale = 1.0f;
 	if (std::getenv("ILLIXR_OVERSCAN") != nullptr) {
 		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
@@ -228,7 +243,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	 
 	// Setup info.
 	struct u_device_simple_info info;
-	info.display.w_pixels = (uint32_t)(get_server_width() * scale);
+	info.display.w_pixels = (uint32_t)(get_server_width() * scale * 2);
 	info.display.h_pixels = (uint32_t)(get_server_height() * scale);
 	info.display.w_meters = 0.122f;
 	info.display.h_meters = 0.07f;
@@ -260,10 +275,14 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	u_var_add_root(dh, "ILLIXR", true);
 	u_var_add_pose(dh, &dh->pose, "pose");
 
-	if (dh->base.hmd->distortion.preferred == XRT_DISTORTION_MODEL_NONE) {
+	//if (dh->base.hmd->distortion.preferred == XRT_DISTORTION_MODEL_NONE) {
 		// Setup the distortion mesh.
-		u_distortion_mesh_set_none(&dh->base);
-	}
+	//	u_distortion_mesh_set_none(&dh->base);
+	//}
+	dh->base.hmd->distortion.models = XRT_DISTORTION_MODEL_COMPUTE;
+	dh->base.hmd->distortion.preferred = XRT_DISTORTION_MODEL_COMPUTE;
+	dh->base.compute_distortion = illixr_compute_distortion;
+	u_distortion_mesh_fill_in_compute(&dh->base);
 
 	// start ILLIXR runtime
 	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {

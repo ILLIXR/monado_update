@@ -1228,6 +1228,10 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 		sys_info->views[i].max.width_pixels          = w_2;
 		sys_info->views[i].max.height_pixels         = h_2;
 		sys_info->views[i].max.sample_count          = 1;
+		COMP_INFO(c, "ILLIXR recommended view[%u]: %ux%u  scale: %.2f",
+    i,
+    sys_info->views[i].recommended.width_pixels,
+    sys_info->views[i].recommended.height_pixels, scale);
 	}
 	// clang-format on
 

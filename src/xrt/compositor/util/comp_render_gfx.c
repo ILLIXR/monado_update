@@ -116,9 +116,12 @@ static const VkClearColorValue background_color_idle = {
 };
 
 static const VkClearColorValue background_color_active = {
+#ifdef USE_MONADO_ILLIXR_DRIVER
+    .float32 = {1.0f, 0.0f, 1.0f, 1.0f}, // magenta for debugging
+#else
     .float32 = {0.0f, 0.0f, 0.0f, 1.0f},
+#endif
 };
-
 
 /*
  *
@@ -412,7 +415,11 @@ do_projection_layer(struct render_gfx *render,
 
 	// Create MVP matrix, rotation only so we get 3dof timewarp.
 	struct xrt_vec3 scale = {1, 1, 1};
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	calc_mvp_full(state, layer_data, &vd->pose, &scale, &data.mvp);
+#else
 	calc_mvp_rot_only(state, layer_data, &vd->pose, &scale, &data.mvp);
+#endif
 
 	// Can fail if we have too many layers.
 	VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
@@ -522,7 +529,13 @@ crg_distortion_common(struct render_gfx *render,
 	for (uint32_t i = 0; i < d->view_count; i++) {
 
 		struct render_gfx_mesh_ubo_data data = {
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		    // Force identity vertex rotation — ILLIXR does not use
+		    // physical HMD panel rotation, so v->rot may not be identity.
+		    .vertex_rot = {{.vecs = {{1, 0}, {0, 1}}}},
+#else
 		    .vertex_rot = d->views[i].gfx.vertex_rot,
+#endif
 		    .post_transform = md->views[i].src_norm_rect,
 		};
 
@@ -536,7 +549,20 @@ crg_distortion_common(struct render_gfx *render,
 			    &d->views[i].world_pose,  //
 			    &data.transform);         //
 		}
-
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		else {
+			// pre_transform is only written above when do_timewarp is
+			// true. When false the field is zeroed (XRT_STRUCT_INIT),
+			// which causes the shader to sample from UV coordinate
+			// (0,0,0,0). For ILLIXR, always write a full-coverage rect.
+			data.pre_transform = (struct xrt_normalized_rect){
+			    .x = 0.0f,
+			    .y = 0.0f,
+			    .w = 1.0f,
+			    .h = 1.0f,
+			};
+		}
+#endif
 		ret = render_gfx_mesh_alloc_and_write( //
 		    render,                            //
 		    &data,                             //
@@ -877,6 +903,51 @@ err_layer:
 	VK_ERROR(vk, "Layer processing failed, that shouldn't happen!");
 }
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+/// ILLIXR fast path: bypass distortion mesh, blit scratch images directly to
+/// target with no timewarp and no lens distortion correction.
+static void
+crg_direct_fast_path(struct render_gfx *render,
+                     const struct comp_render_dispatch_data *d,
+                     const struct comp_layer *layer,
+                     const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS])
+{
+	const struct xrt_layer_data *data = &layer->data;
+	const VkSampler clamp_to_border_black = render->r->samplers.clamp_to_border_black;
+
+	struct gfx_mesh_data md = XRT_STRUCT_INIT;
+	for (uint32_t i = 0; i < d->view_count; i++) {
+		const uint32_t array_index = vds[i]->sub.array_index;
+		const struct comp_swapchain_image *image = get_layer_image(layer, i, vds[i]->sub.image_index);
+
+		struct xrt_pose src_pose = vds[i]->pose;
+		struct xrt_fov src_fov = vds[i]->fov;
+		struct xrt_normalized_rect src_norm_rect = vds[i]->sub.norm_rect;
+		const VkImageView src_image_view = get_image_view(image, data->flags, array_index);
+
+		if (data->flip_y) {
+			src_norm_rect.y += src_norm_rect.h;
+			src_norm_rect.h = -src_norm_rect.h;
+		}
+
+		gfx_mesh_add_view(         //
+		    &md,                   //
+		    i,                     //
+		    &src_pose,             //
+		    &src_fov,              //
+		    &src_norm_rect,        //
+		    clamp_to_border_black, //
+		    src_image_view);       //
+	}
+
+	// do_timewarp=false: identity transform, no pose-delta warp, no distortion.
+	crg_distortion_common( //
+	    render,            //
+	    false,             // do_timewarp
+	    &md,               //
+	    d);                //
+}
+#endif
 
 
 void
@@ -904,11 +975,19 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 		for (uint32_t view = 0; view < d->view_count; ++view) {
 			vds[view] = &proj->v[view];
 		}
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		crg_direct_fast_path( //
+		    render,           //
+		    d,                //
+		    layer,            //
+		    vds);             //
+#else
 		crg_distortion_fast_path( //
 		    render,               //
 		    d,                    //
 		    layer,                //
 		    vds);                 //
+#endif
 
 	} else if (fast_path && layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
 		// Fast path.
@@ -917,11 +996,19 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 		for (uint32_t view = 0; view < d->view_count; ++view) {
 			vds[view] = &depth->v[view];
 		}
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		crg_direct_fast_path( //
+		    render,           //
+		    d,                //
+		    layer,            //
+		    vds);             //
+#else
 		crg_distortion_fast_path( //
 		    render,               //
 		    d,                    //
 		    layer,                //
 		    vds);                 //
+#endif
 
 	} else if (layer_count > 0) {
 		// Graphics layer squasher
