@@ -914,7 +914,31 @@ crg_direct_fast_path(struct render_gfx *render,
 {
 	const struct xrt_layer_data *data = &layer->data;
 	const VkSampler clamp_to_border_black = render->r->samplers.clamp_to_border_black;
-
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	static bool logged = false;
+	if (!logged) {
+		logged = true;
+		for (uint32_t i = 0; i < d->view_count; i++) {
+			const struct comp_swapchain *sc =
+			    (const struct comp_swapchain *)comp_layer_get_swapchain(layer, i);
+			U_LOG_W(
+			    "ILLIXR crg_direct_fast_path view=%u: "
+			    "sc=%p sc_w=%u sc_h=%u "
+			    "image_index=%u array_index=%u "
+			    "norm_rect=(%.3f,%.3f,%.3f,%.3f) "
+			    "pose=(%.3f,%.3f,%.3f, %.3f,%.3f,%.3f,%.3f) "
+			    "viewport=(x=%u y=%u w=%u h=%u)",
+			    i, (void *)sc, sc ? sc->vkic.info.width : 0, sc ? sc->vkic.info.height : 0,
+			    vds[i]->sub.image_index, vds[i]->sub.array_index, vds[i]->sub.norm_rect.x,
+			    vds[i]->sub.norm_rect.y, vds[i]->sub.norm_rect.w, vds[i]->sub.norm_rect.h,
+			    vds[i]->pose.position.x, vds[i]->pose.position.y, vds[i]->pose.position.z,
+			    vds[i]->pose.orientation.x, vds[i]->pose.orientation.y, vds[i]->pose.orientation.z,
+			    vds[i]->pose.orientation.w, d->views[i].target_viewport_data.x,
+			    d->views[i].target_viewport_data.y, d->views[i].target_viewport_data.w,
+			    d->views[i].target_viewport_data.h);
+		}
+	}
+#endif
 	struct gfx_mesh_data md = XRT_STRUCT_INIT;
 	for (uint32_t i = 0; i < d->view_count; i++) {
 		const uint32_t array_index = vds[i]->sub.array_index;
@@ -1040,3 +1064,11 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 		    d);           //
 	}
 }
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+void
+comp_render_gfx_distortion_from_scratch(struct render_gfx *render, const struct comp_render_dispatch_data *d)
+{
+	crg_distortion_after_squash(render, d);
+}
+#endif

@@ -389,7 +389,7 @@ compositor_layer_commit(struct xrt_compositor *xc, xrt_graphics_sync_handle_t sy
 	    can_do_one_projection_layer_fast_path(c); //
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	// ILLIXR: disable fast path
-	fast_path = false;
+	//fast_path = false;
 #endif
 	c->base.frame_params.one_projection_layer_fast_path = fast_path;
 

@@ -1611,309 +1611,6 @@ create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, 
 }
 #endif
 
-#ifdef USE_MONADO_ILLIXR_DRIVER
-/* static struct
-{
-	VkBuffer buffer;
-	VkDeviceMemory memory;
-	uint32_t width;
-	uint32_t height;
-	int eye;
-	bool pending;
-} unity_raw_saves[4]; // 2 eyes × up to 2 frames
-static int unity_save_index = 0;
-static int unity_save_count = 0;
-static void
-queue_unity_raw_save(
-    struct comp_renderer *r, struct render_gfx *render, VkImage src_image, uint32_t width, uint32_t height, int eye)
-{
-	if (unity_save_index >= 4)
-		return;
-
-	struct comp_compositor *c = r->c;
-	struct vk_bundle *vk = &c->base.vk;
-	VkCommandBuffer cmd = render->r->cmd;
-	VkResult ret;
-
-	VkDeviceSize buffer_size = (VkDeviceSize)width * height * 4;
-
-	VkBufferCreateInfo buf_info = {
-	    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-	    .size = buffer_size,
-	    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-	};
-
-	VkBuffer staging_buffer;
-	ret = vk->vkCreateBuffer(vk->device, &buf_info, NULL, &staging_buffer);
-	if (ret != VK_SUCCESS) {
-		COMP_ERROR(c, "unity raw save: vkCreateBuffer failed");
-		return;
-	}
-
-	VkMemoryRequirements mem_reqs;
-	vk->vkGetBufferMemoryRequirements(vk->device, staging_buffer, &mem_reqs);
-
-	VkPhysicalDeviceMemoryProperties mem_props;
-	vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_props);
-
-	uint32_t mem_type = UINT32_MAX;
-	for (uint32_t j = 0; j < mem_props.memoryTypeCount; j++) {
-		if ((mem_reqs.memoryTypeBits & (1u << j)) &&
-		    (mem_props.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-			mem_type = j;
-			break;
-		}
-	}
-
-	if (mem_type == UINT32_MAX) {
-		COMP_ERROR(c, "unity raw save: no host-visible memory");
-		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-		return;
-	}
-
-	VkMemoryAllocateInfo alloc_info = {
-	    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-	    .allocationSize = mem_reqs.size,
-	    .memoryTypeIndex = mem_type,
-	};
-
-	VkDeviceMemory staging_memory;
-	ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &staging_memory);
-	if (ret != VK_SUCCESS) {
-		COMP_ERROR(c, "unity raw save: vkAllocateMemory failed");
-		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-		return;
-	}
-
-	vk->vkBindBufferMemory(vk->device, staging_buffer, staging_memory, 0);
-	COMP_INFO(r->c, "Unity swapchain eye=%d: image=%p size=%ux%u img_idx=%u", eye, (void *)src_image, width, height,
-	          0);
-	// Transition to TRANSFER_SRC
-	VkImageMemoryBarrier barrier = {
-	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-	    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-	    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-	    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-	    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-	    .image = src_image,
-	    .subresourceRange =
-	        {
-	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-	            .levelCount = 1,
-	            .layerCount = 1,
-	        },
-	};
-
-	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-	                         0, NULL, 0, NULL, 1, &barrier);
-
-	VkBufferImageCopy region = {
-	    .imageSubresource =
-	        {
-	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-	            .layerCount = 1,
-	        },
-	    .imageExtent = {width, height, 1},
-	};
-
-	vk->vkCmdCopyImageToBuffer(cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
-
-	// Transition back
-	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-	barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-	                         0, NULL, 0, NULL, 1, &barrier);
-
-	unity_raw_saves[unity_save_index].buffer = staging_buffer;
-	unity_raw_saves[unity_save_index].memory = staging_memory;
-	unity_raw_saves[unity_save_index].width = width;
-	unity_raw_saves[unity_save_index].height = height;
-	unity_raw_saves[unity_save_index].eye = eye;
-	unity_raw_saves[unity_save_index].pending = true;
-	unity_save_index++;
-
-	COMP_INFO(c, "unity raw save: queued eye=%d (%ux%u)", eye, width, height);
-}
-#endif
-
-#ifdef USE_MONADO_ILLIXR_DRIVER
-static struct
-{
-	VkBuffer buffer;
-	VkDeviceMemory memory;
-	uint32_t width;
-	uint32_t height;
-	uint32_t eye;
-	int frame;
-	bool pending;
-} scratch_saves[6]; // 3 frames × 2 eyes
-static int scratch_save_index = 0;
-
-static void
-queue_scratch_image_save(struct comp_renderer *r,
-                         struct render_gfx *render,
-                         VkImage src_image,
-                         VkImageLayout src_layout,
-                         uint32_t width,
-                         uint32_t height,
-                         uint32_t eye,
-                         int frame)
-{
-	struct comp_compositor *c = r->c;
-	struct vk_bundle *vk = &c->base.vk;
-	VkCommandBuffer cmd = render->r->cmd;
-	VkResult ret;
-
-	if (scratch_save_index >= 6)
-		return;
-
-	VkDeviceSize buffer_size = (VkDeviceSize)width * height * 4;
-
-	VkBufferCreateInfo buf_info = {
-	    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-	    .size = buffer_size,
-	    .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-	};
-
-	VkBuffer staging_buffer;
-	ret = vk->vkCreateBuffer(vk->device, &buf_info, NULL, &staging_buffer);
-	if (ret != VK_SUCCESS) {
-		COMP_ERROR(c, "scratch dump: vkCreateBuffer failed: %d", ret);
-		return;
-	}
-
-	VkMemoryRequirements mem_reqs;
-	vk->vkGetBufferMemoryRequirements(vk->device, staging_buffer, &mem_reqs);
-
-	VkPhysicalDeviceMemoryProperties mem_props;
-	vk->vkGetPhysicalDeviceMemoryProperties(vk->physical_device, &mem_props);
-
-	uint32_t mem_type_index = UINT32_MAX;
-	for (uint32_t j = 0; j < mem_props.memoryTypeCount; j++) {
-		if ((mem_reqs.memoryTypeBits & (1u << j)) &&
-		    (mem_props.memoryTypes[j].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-			mem_type_index = j;
-			break;
-		}
-	}
-
-	if (mem_type_index == UINT32_MAX) {
-		COMP_ERROR(c, "scratch dump: no host-visible memory type");
-		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-		return;
-	}
-
-	VkMemoryAllocateInfo alloc_info = {
-	    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-	    .allocationSize = mem_reqs.size,
-	    .memoryTypeIndex = mem_type_index,
-	};
-
-	VkDeviceMemory staging_memory;
-	ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL, &staging_memory);
-	if (ret != VK_SUCCESS) {
-		COMP_ERROR(c, "scratch dump: vkAllocateMemory failed: %d", ret);
-		vk->vkDestroyBuffer(vk->device, staging_buffer, NULL);
-		return;
-	}
-
-	vk->vkBindBufferMemory(vk->device, staging_buffer, staging_memory, 0);
-
-	// Transition src to TRANSFER_SRC
-	VkImageMemoryBarrier barrier = {
-	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-	    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-	    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-	    .oldLayout = src_layout,
-	    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-	    .image = src_image,
-	    .subresourceRange =
-	        {
-	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-	            .levelCount = 1,
-	            .layerCount = 1,
-	        },
-	};
-
-	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-	                         0, NULL, 0, NULL, 1, &barrier);
-
-	VkBufferImageCopy region = {
-	    .imageSubresource =
-	        {
-	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-	            .layerCount = 1,
-	        },
-	    .imageExtent = {width, height, 1},
-	};
-
-	vk->vkCmdCopyImageToBuffer(cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
-
-	// Transition src back
-	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-	barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	barrier.newLayout = src_layout;
-
-	vk->vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-	                         0, NULL, 0, NULL, 1, &barrier);
-
-	scratch_saves[scratch_save_index].buffer = staging_buffer;
-	scratch_saves[scratch_save_index].memory = staging_memory;
-	scratch_saves[scratch_save_index].width = width;
-	scratch_saves[scratch_save_index].height = height;
-	scratch_saves[scratch_save_index].eye = eye;
-	scratch_saves[scratch_save_index].frame = frame;
-	scratch_saves[scratch_save_index].pending = true;
-	scratch_save_index++;
-
-	COMP_INFO(c, "scratch dump: queued eye=%u frame=%d (%ux%u)", eye, frame, width, height);
-}
-
-static void
-flush_scratch_image_saves(struct comp_renderer *r)
-{
-	struct comp_compositor *c = r->c;
-	struct vk_bundle *vk = &c->base.vk;
-
-	for (int i = 0; i < scratch_save_index; i++) {
-		if (!scratch_saves[i].pending)
-			continue;
-
-		void *data;
-		vk->vkMapMemory(vk->device, scratch_saves[i].memory, 0, VK_WHOLE_SIZE, 0, &data);
-
-		char filename[64];
-		snprintf(filename, sizeof(filename), "D:/imgs/scratch_eye%u_frame%d.ppm", scratch_saves[i].eye,
-		         scratch_saves[i].frame);
-
-		FILE *f = fopen(filename, "wb");
-		if (f) {
-			uint32_t w = scratch_saves[i].width;
-			uint32_t h = scratch_saves[i].height;
-			fprintf(f, "P6\n%u %u\n255\n", w, h);
-			uint8_t *px = (uint8_t *)data;
-			for (uint32_t p = 0; p < w * h; p++) {
-				fwrite(px, 1, 3, f); // R,G,B (skip A)
-				px += 4;
-			}
-			fclose(f);
-			COMP_INFO(c, "scratch dump: saved %s", filename);
-		} else {
-			COMP_ERROR(c, "scratch dump: could not open %s", filename);
-		}
-
-		vk->vkUnmapMemory(vk->device, scratch_saves[i].memory);
-		vk->vkFreeMemory(vk->device, scratch_saves[i].memory, NULL);
-		vk->vkDestroyBuffer(vk->device, scratch_saves[i].buffer, NULL);
-		scratch_saves[i].pending = false;
-	}
-}*/
-#endif
-
 /*!
  * @pre render_gfx_init(render, &c->nr)
  */
@@ -1937,18 +1634,7 @@ dispatch_graphics(struct comp_renderer *r,
 	uint32_t layer_count = c->base.layer_accum.layer_count;
 	bool fast_path = c->base.frame_params.one_projection_layer_fast_path;
 #ifdef USE_MONADO_ILLIXR_DRIVER
-	/* if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
-		//COMP_DEBUG(c, "ILLIXR: Frame with %d layers", layer_count);
-		for (uint32_t i = 0; i < layer_count; i++) {
-			if (layers[i].data.type == XRT_LAYER_PROJECTION) {
-			//	COMP_DEBUG(c, "  Layer %d: PROJECTION (color only)", i);
-			} else if (layers[i].data.type == XRT_LAYER_PROJECTION_DEPTH) {
-			//	COMP_DEBUG(c, "  Layer %d: PROJECTION_DEPTH (color + depth)", i);
-			}
-		}
-	}*/
-
-	//bool do_timewarp = illixr_offload_frames() && !c->debug.atw_off;
+	// bool do_timewarp = illixr_offload_frames() && !c->debug.atw_off;
 	bool do_timewarp = false;
 #else
 	bool do_timewarp = !c->debug.atw_off;
@@ -2012,22 +1698,23 @@ dispatch_graphics(struct comp_renderer *r,
 	const struct comp_layer filtered_layers_storage[XRT_MAX_LAYERS];
 	const struct comp_layer *filtered_layers = layers;
 	uint32_t filtered_count = layer_count;
-	
+
 	{
 		uint32_t n = 0;
 		for (uint32_t i = 0; i < layer_count; i++) {
-			//COMP_WARN(c, "Checking layer %d: type %d == %d, %.1f > 9998.0", i, (int)layers[i].data.type, (int)XRT_LAYER_QUAD,
-			//          layers[i].data.quad.size.x);
+			// COMP_WARN(c, "Checking layer %d: type %d == %d, %.1f > 9998.0", i, (int)layers[i].data.type,
+			// (int)XRT_LAYER_QUAD,
+			//           layers[i].data.quad.size.x);
 			if (layers[i].data.type == XRT_LAYER_QUAD &&
 			    layers[i].data.quad.size.x > (ILLIXR_MV_SENTINEL_SIZE - 1.0f)) {
 				// Sentinel quad: capture swapchain pointer if not yet done.
-			//	COMP_WARN(c, "  set sc pointer:  %p == NULL  %p != NULL", g_illixr_mv_sc,
-			//	          layers[i].sc_array[0]);
+				//	COMP_WARN(c, "  set sc pointer:  %p == NULL  %p != NULL", g_illixr_mv_sc,
+				//	          layers[i].sc_array[0]);
 				if (g_illixr_mv_sc == NULL && layers[i].sc_array[0] != NULL) {
 					g_illixr_mv_sc = (struct comp_swapchain *)layers[i].sc_array[0];
-			//		COMP_WARN(c, "ILLIXR: Captured MV swapchain from sentinel: %ux%u sc=%p",
-			//		          g_illixr_mv_sc->vkic.info.width, +g_illixr_mv_sc->vkic.info.height,
-			//		          (void *)g_illixr_mv_sc);
+					//		COMP_WARN(c, "ILLIXR: Captured MV swapchain from sentinel: %ux%u
+					//sc=%p", 		          g_illixr_mv_sc->vkic.info.width, +g_illixr_mv_sc->vkic.info.height,
+					//		          (void *)g_illixr_mv_sc);
 				}
 				// Do NOT add to filtered list — exclude from compositing.
 			} else {
@@ -2047,7 +1734,7 @@ dispatch_graphics(struct comp_renderer *r,
 
 	uint32_t mv_ring_index = 0;
 	bool mv_shmem_valid = false;
-	//COMP_WARN(c, "ILLIXR shm:  %p   %p", (void *)g_illixr_shmem, (void *)g_illixr_mv_sc);
+	// COMP_WARN(c, "ILLIXR shm:  %p   %p", (void *)g_illixr_shmem, (void *)g_illixr_mv_sc);
 	if (g_illixr_shmem != NULL && g_illixr_mv_sc != NULL) {
 		// Two-read protocol: seq before and after ring_index read.
 		// On x86 32-bit aligned reads are naturally atomic so a single
@@ -2056,10 +1743,10 @@ dispatch_graphics(struct comp_renderer *r,
 		uint32_t ring = g_illixr_shmem->ring_index;
 		uint32_t seq_after = g_illixr_shmem->frame_seq;
 
-		//COMP_WARN(c, "    check: %d == %d  && %d != %d && %d < %d", seq_before, seq_after, seq_before,
-		//          g_illixr_last_seq, ring, g_illixr_mv_sc->vkic.image_count);
-		if (seq_before == seq_after // no torn write
-		    && seq_before != g_illixr_last_seq // new frame
+		// COMP_WARN(c, "    check: %d == %d  && %d != %d && %d < %d", seq_before, seq_after, seq_before,
+		//           g_illixr_last_seq, ring, g_illixr_mv_sc->vkic.image_count);
+		if (seq_before == seq_after                     // no torn write
+		    && seq_before != g_illixr_last_seq          // new frame
 		    && ring < g_illixr_mv_sc->vkic.image_count) // valid index
 		{
 			mv_ring_index = ring;
@@ -2067,44 +1754,38 @@ dispatch_graphics(struct comp_renderer *r,
 			g_illixr_last_seq = seq_before;
 		}
 	} else if (g_illixr_mv_sc == NULL) {
-		//COMP_WARN(c, "ILLIXR: g_illixr_mv_sc still NULL - waiting for sentinel quad layer from Unity");
+		// COMP_WARN(c, "ILLIXR: g_illixr_mv_sc still NULL - waiting for sentinel quad layer from Unity");
 	}
 
 	if (proj_layer) {
-
-
-			static bool rect_logged = false;
-			if (!rect_logged) {
-				for (uint32_t eye = 0; eye < 2; eye++) {
-					if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
-						struct xrt_layer_projection_view_data *vd =
-						    &proj_layer->data.proj.v[eye];
-						COMP_WARN(c,
-						          "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
-						          "swapchain=(%u,%u)",
-						          eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h,
-						          vd->sub.rect.extent.w, vd->sub.rect.extent.h,
-						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
-						              ->vkic.info.width,
-						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
-						              ->vkic.info.height);
-					} else {
-						struct xrt_layer_projection_view_data *vd =
-						    &proj_layer->data.depth.v[eye];
-						COMP_WARN(c,
-						          "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
-						          "swapchain=(%u,%u)",
-						          eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h,
-						          vd->sub.rect.extent.w, vd->sub.rect.extent.h,
-						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
-						              ->vkic.info.width,
-						          ((struct comp_swapchain *)proj_layer->sc_array[eye])
-						              ->vkic.info.height);
-					}
+		static bool rect_logged = false;
+		if (!rect_logged) {
+			for (uint32_t eye = 0; eye < 2; eye++) {
+				if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
+					struct xrt_layer_projection_view_data *vd = &proj_layer->data.proj.v[eye];
+					COMP_WARN(
+					    c,
+					    "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
+					    "swapchain=(%u,%u)",
+					    eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h, vd->sub.rect.extent.w,
+					    vd->sub.rect.extent.h,
+					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.width,
+					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.height);
+				} else {
+					struct xrt_layer_projection_view_data *vd = &proj_layer->data.depth.v[eye];
+					COMP_WARN(
+					    c,
+					    "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
+					    "swapchain=(%u,%u)",
+					    eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h, vd->sub.rect.extent.w,
+					    vd->sub.rect.extent.h,
+					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.width,
+					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.height);
 				}
-				rect_logged = true;
 			}
-		
+			rect_logged = true;
+		}
+
 		struct xrt_pose left_pose;
 		struct xrt_pose right_pose;
 
@@ -2174,63 +1855,136 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Start the graphics pipeline.
 	render_gfx_begin(render);
-	/*
-#ifdef USE_MONADO_ILLIXR_DRIVER
-	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && proj_layer != NULL) {
-		static int unity_dump_frame = 0;
-		unity_dump_frame++;
-		if (unity_dump_frame >= 500 && unity_dump_frame < 502) {
-			for (uint32_t eye = 0; eye < 2; eye++) {
-				struct comp_swapchain *comp_sc = (struct comp_swapchain *)proj_layer->sc_array[eye];
-				if (comp_sc) {
-					uint32_t img_idx = (proj_layer->data.type == XRT_LAYER_PROJECTION)
-					                       ? proj_layer->data.proj.v[eye].sub.array_index
-					                       : proj_layer->data.depth.v[eye].sub.array_index;
-					VkImage unity_image = comp_sc->vkic.images[img_idx].handle;
-					queue_unity_raw_save(r, render, unity_image, comp_sc->vkic.info.width,
-					                     comp_sc->vkic.info.height, (int)eye);
-				}
-			}
-		}
-	}
-#endif*/
-	// Build the command buffer.
-	comp_render_gfx_dispatch(
-	    render,
-	    filtered_layers,
-	    filtered_count,
-	    &data);
-/*
-#ifdef USE_MONADO_ILLIXR_DRIVER
-	if (strcmp(r->c->xdev->str, "ILLIXR") == 0) {
-		static int dump_frame = 0;
-		if (dump_frame >=200 && dump_frame < 205) {
-			for (uint32_t eye = 0; eye < 2; eye++) {
-				uint32_t scratch_index = crss->views[eye].index;
-				struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
-				struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
 
-				queue_scratch_image_save(
-				    r, render, scratch_image->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				    scratch_view->info.width, scratch_view->info.height, eye, dump_frame);
-			}
-		}
-		dump_frame++;
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (fast_path && proj_layer != NULL) {
+		// Unity uses a texture array swapchain (both eyes in one VkImage,
+		// array_index 0=left, 1=right). The mesh shader expects a plain
+		// sampler2D and cannot bind an array image view directly.
+		// Blit each eye's array layer into its per-eye 2D scratch image,
+		// then composite through the identity distortion mesh from there.
+		for (uint32_t eye = 0; eye < 2; eye++) {
+			uint32_t image_index = (proj_layer->data.type == XRT_LAYER_PROJECTION)
+			                           ? proj_layer->data.proj.v[eye].sub.image_index
+			                           : proj_layer->data.depth.v[eye].sub.image_index;
+			uint32_t array_index = (proj_layer->data.type == XRT_LAYER_PROJECTION)
+			                           ? proj_layer->data.proj.v[eye].sub.array_index
+			                           : proj_layer->data.depth.v[eye].sub.array_index;
 
+			struct comp_swapchain *comp_sc = (struct comp_swapchain *)proj_layer->sc_array[eye];
+			VkImage src_image = comp_sc->vkic.images[image_index].handle;
+			uint32_t src_w = comp_sc->vkic.info.width;
+			uint32_t src_h = comp_sc->vkic.info.height;
+
+			uint32_t scratch_index = crss->views[eye].index;
+			struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
+			struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
+			uint32_t dst_w = scratch_view->info.width;
+			uint32_t dst_h = scratch_view->info.height;
+
+			// Unity swapchain: SHADER_READ_ONLY → TRANSFER_SRC (one array layer).
+			VkImageMemoryBarrier barrier = {
+			    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			    .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+			    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			    .image = src_image,
+			    .subresourceRange =
+			        {
+			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			            .baseMipLevel = 0,
+			            .levelCount = 1,
+			            .baseArrayLayer = array_index,
+			            .layerCount = 1,
+			        },
+			};
+			vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+			// Scratch image: COLOR_ATTACHMENT_OPTIMAL → TRANSFER_DST_OPTIMAL.
+			barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.image = scratch_image->image;
+			barrier.subresourceRange.baseArrayLayer = 0;
+			vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+			// Blit the correct array layer into the plain 2D scratch image.
+			VkImageBlit blit = {
+			    .srcSubresource =
+			        {
+			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			            .mipLevel = 0,
+			            .baseArrayLayer = array_index,
+			            .layerCount = 1,
+			        },
+			    .srcOffsets = {{0, 0, 0}, {src_w, src_h, 1}},
+			    .dstSubresource =
+			        {
+			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			            .mipLevel = 0,
+			            .baseArrayLayer = 0,
+			            .layerCount = 1,
+			        },
+			    .dstOffsets = {{0, 0, 0}, {dst_w, dst_h, 1}},
+			};
+			vk->vkCmdBlitImage(render->r->cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			                   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+			                   VK_FILTER_LINEAR);
+
+			// Unity swapchain back to SHADER_READ_ONLY.
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.image = src_image;
+			barrier.subresourceRange.baseArrayLayer = array_index;
+			vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+			                         &barrier);
+
+			// Scratch image to SHADER_READ_ONLY for the distortion pass.
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			barrier.image = scratch_image->image;
+			barrier.subresourceRange.baseArrayLayer = 0;
+			vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+			                         &barrier);
+
+			crss->views[eye].used = true;
+		}
+
+		// Composite from the scratch images through the identity distortion
+		// mesh. Bypasses the layer squasher and its pose-based MVP warp.
+		comp_render_gfx_distortion_from_scratch(render, &data);
+		goto illixr_gfx_dispatch_done;
 	}
 #endif
-*/
+	comp_render_gfx_dispatch(render, filtered_layers, filtered_count, &data);
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+illixr_gfx_dispatch_done:;
+#endif
+
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	if (strcmp(r->c->xdev->str, "ILLIXR") == 0 && !illixr_offload_frames()) {
-		//COMP_INFO(c, "ILLIXR: Acquiring buffer for encoding");
+		// COMP_INFO(c, "ILLIXR: Acquiring buffer for encoding");
 
 		illixr_buffer_index = illixr_src_acquire();
 
 		if (illixr_buffer_index < 0) {
 			COMP_WARN(c, "ILLIXR: No buffer available, skipping frame");
 		} else {
-			//COMP_INFO(c, "ILLIXR: Acquired buffer index: %d", illixr_buffer_index);
-			// Create downsampled images if not already created
+			// COMP_INFO(c, "ILLIXR: Acquired buffer index: %d", illixr_buffer_index);
+			//  Create downsampled images if not already created
 			if (!r->illixr_downsampled_created) {
 				// Target encoding resolution (no scaling)
 				uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
@@ -2260,20 +2014,23 @@ dispatch_graphics(struct comp_renderer *r,
 				// encoder indices stay at -1 and later encode calls warn "not imported".
 				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
 					// COLOR
-					r->illixr_framebuffers[i].image         = r->illixr_color_downsampled[i].image;
-					r->illixr_framebuffers[i].memory        = r->illixr_color_downsampled[i].memory;
-					r->illixr_framebuffers[i].view          = r->illixr_color_downsampled[i].view;
-					r->illixr_framebuffers[i].image_size    = r->illixr_color_downsampled[i].memory_size;
-					r->illixr_framebuffers[i].image_offset  = 0;
-					r->illixr_framebuffers[i].image_extent.width  = r->illixr_color_downsampled[i].width;
-					r->illixr_framebuffers[i].image_extent.height = r->illixr_color_downsampled[i].height;
+					r->illixr_framebuffers[i].image = r->illixr_color_downsampled[i].image;
+					r->illixr_framebuffers[i].memory = r->illixr_color_downsampled[i].memory;
+					r->illixr_framebuffers[i].view = r->illixr_color_downsampled[i].view;
+					r->illixr_framebuffers[i].image_size =
+					    r->illixr_color_downsampled[i].memory_size;
+					r->illixr_framebuffers[i].image_offset = 0;
+					r->illixr_framebuffers[i].image_extent.width =
+					    r->illixr_color_downsampled[i].width;
+					r->illixr_framebuffers[i].image_extent.height =
+					    r->illixr_color_downsampled[i].height;
 					// DEPTH (RG image, always valid when depth is enabled)
-					r->illixr_framebuffers[i].depth_image   = r->illixr_depth_rg[i].image;
-					r->illixr_framebuffers[i].depth_memory  = r->illixr_depth_rg[i].memory;
-					r->illixr_framebuffers[i].depth_view    = r->illixr_depth_rg[i].view;
-					r->illixr_framebuffers[i].depth_size    = r->illixr_depth_rg[i].memory_size;
-					r->illixr_framebuffers[i].depth_offset  = 0;
-					r->illixr_framebuffers[i].depth_extent.width  = r->illixr_depth_rg[i].width;
+					r->illixr_framebuffers[i].depth_image = r->illixr_depth_rg[i].image;
+					r->illixr_framebuffers[i].depth_memory = r->illixr_depth_rg[i].memory;
+					r->illixr_framebuffers[i].depth_view = r->illixr_depth_rg[i].view;
+					r->illixr_framebuffers[i].depth_size = r->illixr_depth_rg[i].memory_size;
+					r->illixr_framebuffers[i].depth_offset = 0;
+					r->illixr_framebuffers[i].depth_extent.width = r->illixr_depth_rg[i].width;
 					r->illixr_framebuffers[i].depth_extent.height = r->illixr_depth_rg[i].height;
 				}
 
@@ -2287,28 +2044,160 @@ dispatch_graphics(struct comp_renderer *r,
 				// do not need Unity's swapchain dimensions here.
 				create_illixr_motion_vector_images(r, MOTION_VECTOR_WIDTH, MOTION_VECTOR_HEIGHT);
 				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
-					r->illixr_framebuffers[i].motion_vec_image  = r->illixr_motion_vectors[i].image;
-					r->illixr_framebuffers[i].motion_vec_memory = r->illixr_motion_vectors[i].memory;
-					r->illixr_framebuffers[i].motion_vec_view   = r->illixr_motion_vectors[i].view;
-					r->illixr_framebuffers[i].motion_vec_size   = r->illixr_motion_vectors[i].memory_size;
+					r->illixr_framebuffers[i].motion_vec_image = r->illixr_motion_vectors[i].image;
+					r->illixr_framebuffers[i].motion_vec_memory =
+					    r->illixr_motion_vectors[i].memory;
+					r->illixr_framebuffers[i].motion_vec_view = r->illixr_motion_vectors[i].view;
+					r->illixr_framebuffers[i].motion_vec_size =
+					    r->illixr_motion_vectors[i].memory_size;
 					r->illixr_framebuffers[i].motion_vec_offset = 0;
-					r->illixr_framebuffers[i].motion_vec_extent.width  = MOTION_VECTOR_WIDTH;
+					r->illixr_framebuffers[i].motion_vec_extent.width = MOTION_VECTOR_WIDTH;
 					r->illixr_framebuffers[i].motion_vec_extent.height = MOTION_VECTOR_HEIGHT;
 				}
 
 				r->illixr_downsampled_created = true;
 			}
-			// Copy both eyes from scratch images to buffer pool
+			// Fast path: read directly from the Unity projection layer swapchain image
+			// (in SHADER_READ_ONLY_OPTIMAL after the distortion pass sampled it).
+			// Slow path: read from the scratch image written by the layer squasher
+			// (in COLOR_ATTACHMENT_OPTIMAL).
 			for (uint32_t eye = 0; eye < 2; eye++) {
+				int fb_idx = illixr_buffer_index * 2 + eye;
+
+				// Determine source image and its current layout.
+				VkImage src_image;
+				uint32_t src_width, src_height;
+				VkAccessFlags src_access_before;
+				VkAccessFlags src_access_after;
+				VkImageLayout src_layout_before;
+				VkImageLayout src_layout_after;
+				VkPipelineStageFlags src_stage_before;
+				VkPipelineStageFlags src_stage_after;
+
+				if (fast_path && proj_layer != NULL) {
+					// Unity swapchain image — already in SHADER_READ_ONLY after
+					// the distortion pass sampled it.
+					uint32_t image_index;
+					if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
+						image_index = proj_layer->data.proj.v[eye].sub.image_index;
+					} else {
+						image_index = proj_layer->data.depth.v[eye].sub.image_index;
+					}
+					struct comp_swapchain *comp_sc =
+					    (struct comp_swapchain *)proj_layer->sc_array[eye];
+					src_image = comp_sc->vkic.images[image_index].handle;
+					src_width = comp_sc->vkic.info.width;
+					src_height = comp_sc->vkic.info.height;
+					src_access_before = VK_ACCESS_SHADER_READ_BIT;
+					src_access_after = VK_ACCESS_SHADER_READ_BIT;
+					src_layout_before = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					src_layout_after = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					src_stage_before = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+					src_stage_after = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+				} else {
+					// Scratch image written by the layer squasher.
+					uint32_t scratch_index = crss->views[eye].index;
+					struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
+					struct render_scratch_color_image *scratch_image =
+					    &scratch_view->images[scratch_index];
+					src_image = scratch_image->image;
+					src_width = scratch_view->info.width;
+					src_height = scratch_view->info.height;
+					src_access_before = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+					src_access_after = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+					src_layout_before = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+					src_layout_after = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+					src_stage_before = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+					src_stage_after = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+				}
+
+				// For array swapchains (fast path), read the correct layer.
+				// For non-array sources (slow path) this is always 0.
+				uint32_t enc_array_index = (fast_path && proj_layer != NULL)
+				                               ? ((proj_layer->data.type == XRT_LAYER_PROJECTION)
+				                                      ? proj_layer->data.proj.v[eye].sub.array_index
+				                                      : proj_layer->data.depth.v[eye].sub.array_index)
+				                               : 0;
+
+				// Transition source to TRANSFER_SRC
+				VkImageMemoryBarrier barrier = {
+				    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				    .srcAccessMask = src_access_before,
+				    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				    .oldLayout = src_layout_before,
+				    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				    .image = src_image,
+				    .subresourceRange =
+				        {
+				            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				            .levelCount = 1,
+				            .baseArrayLayer = enc_array_index,
+				            .layerCount = 1,
+				        },
+				};
+
+				vk->vkCmdPipelineBarrier(render->r->cmd, src_stage_before,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+				                         &barrier);
+
+				// Transition downsampled to TRANSFER_DST
+				barrier.srcAccessMask = 0;
+				barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.image = r->illixr_color_downsampled[fb_idx].image;
+
+				vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+				                         &barrier);
+
+				// Blit (downsample) source → downsampled
+				VkImageBlit blit = {
+				    .srcSubresource =
+				        {
+				            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				            .baseArrayLayer = enc_array_index,
+				            .layerCount = 1,
+				        },
+				    .srcOffsets =
+				        {
+				            {0, 0, 0},
+				            {src_width, src_height, 1},
+				        },
+				    .dstSubresource =
+				        {
+				            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				            .layerCount = 1,
+				        },
+				    .dstOffsets =
+				        {
+				            {0, 0, 0},
+				            {r->illixr_color_downsampled[fb_idx].width,
+				             r->illixr_color_downsampled[fb_idx].height, 1},
+				        },
+				};
+
+				vk->vkCmdBlitImage(render->r->cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				                   r->illixr_color_downsampled[fb_idx].image,
+				                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+				// Transition source back to its original layout
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+				barrier.dstAccessMask = src_access_after;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+				barrier.newLayout = src_layout_after;
+				barrier.image = src_image;
+				barrier.subresourceRange.baseArrayLayer = enc_array_index;
+
+				vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         src_stage_after, 0, 0, NULL, 0, NULL, 1, &barrier);
+				/*
 				// Source: Scratch image for this eye (COLOR)
 				uint32_t scratch_index = crss->views[eye].index;
 				struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
 				struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
 
 				int fb_idx = illixr_buffer_index * 2 + eye;
-
-				// Source: scratch image (1881×1971)
-				// Dest: downsampled image (1344×1408)
 
 				// Transition scratch to TRANSFER_SRC
 				VkImageMemoryBarrier barrier = {
@@ -2319,16 +2208,16 @@ dispatch_graphics(struct comp_renderer *r,
 				    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 				    .image = scratch_image->image,
 				    .subresourceRange = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.levelCount = 1,
-					.layerCount = 1,
+				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				        .levelCount = 1,
+				        .layerCount = 1,
 				    },
 				};
 
 				vk->vkCmdPipelineBarrier(render->r->cmd,
-							 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-							 VK_PIPELINE_STAGE_TRANSFER_BIT,
-							 0, 0, NULL, 0, NULL, 1, &barrier);
+				                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         0, 0, NULL, 0, NULL, 1, &barrier);
 
 				// Transition downsampled to TRANSFER_DST
 				barrier.srcAccessMask = 0;
@@ -2338,35 +2227,35 @@ dispatch_graphics(struct comp_renderer *r,
 				barrier.image = r->illixr_color_downsampled[fb_idx].image;
 
 				vk->vkCmdPipelineBarrier(render->r->cmd,
-							 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-							 VK_PIPELINE_STAGE_TRANSFER_BIT,
-							 0, 0, NULL, 0, NULL, 1, &barrier);
+				                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         0, 0, NULL, 0, NULL, 1, &barrier);
 
 				// Blit (downsample) scratch → downsampled
 				VkImageBlit blit = {
 				    .srcSubresource = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.layerCount = 1,
+				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				        .layerCount = 1,
 				    },
 				    .srcOffsets = {
-					{0, 0, 0},
-					{scratch_view->info.width, scratch_view->info.height, 1},
+				        {0, 0, 0},
+				        {scratch_view->info.width, scratch_view->info.height, 1},
 				    },
 				    .dstSubresource = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.layerCount = 1,
+				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				        .layerCount = 1,
 				    },
 				    .dstOffsets = {
-					{0, 0, 0},
-					{r->illixr_color_downsampled[fb_idx].width,
-					    r->illixr_color_downsampled[fb_idx].height, 1},
+				        {0, 0, 0},
+				        {r->illixr_color_downsampled[fb_idx].width,
+				            r->illixr_color_downsampled[fb_idx].height, 1},
 				    },
 				};
 
 				vk->vkCmdBlitImage(render->r->cmd,
-						   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-						   r->illixr_color_downsampled[fb_idx].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-						   1, &blit, VK_FILTER_LINEAR);
+				                   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				                   r->illixr_color_downsampled[fb_idx].image,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
 				// Transition scratch back
 				barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -2376,10 +2265,10 @@ dispatch_graphics(struct comp_renderer *r,
 				barrier.image = scratch_image->image;
 
 				vk->vkCmdPipelineBarrier(render->r->cmd,
-							 VK_PIPELINE_STAGE_TRANSFER_BIT,
-							 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-							 0, 0, NULL, 0, NULL, 1, &barrier);
-
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				                         0, 0, NULL, 0, NULL, 1, &barrier);
+				                         */
 				// Transition downsampled to SHADER_READ (for NVENC)
 				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2387,24 +2276,25 @@ dispatch_graphics(struct comp_renderer *r,
 				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				barrier.image = r->illixr_color_downsampled[fb_idx].image;
 
-				vk->vkCmdPipelineBarrier(render->r->cmd,
-							 VK_PIPELINE_STAGE_TRANSFER_BIT,
-							 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-							 0, 0, NULL, 0, NULL, 1, &barrier);
+				vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+				                         &barrier);
 
 				// Populate COLOR fields
 				r->illixr_framebuffers[fb_idx].image = r->illixr_color_downsampled[fb_idx].image;
 				r->illixr_framebuffers[fb_idx].memory = r->illixr_color_downsampled[fb_idx].memory;
 				r->illixr_framebuffers[fb_idx].view = r->illixr_color_downsampled[fb_idx].view;
-				r->illixr_framebuffers[fb_idx].image_extent.width = r->illixr_color_downsampled[fb_idx].width;
-				r->illixr_framebuffers[fb_idx].image_extent.height = r->illixr_color_downsampled[fb_idx].height;
+				r->illixr_framebuffers[fb_idx].image_extent.width =
+				    r->illixr_color_downsampled[fb_idx].width;
+				r->illixr_framebuffers[fb_idx].image_extent.height =
+				    r->illixr_color_downsampled[fb_idx].height;
 				r->illixr_framebuffers[fb_idx].image_size =
-				    scratch_view->native_images[scratch_index].size;
+				    r->illixr_color_downsampled[fb_idx].memory_size;
 				r->illixr_framebuffers[fb_idx].image_offset = 0;
 
-				//COMP_INFO(c, "ILLIXR: Eye=%d, scratch_view: %ux%u, scratch_image handle: %p", eye,
-				//          scratch_view->info.width, scratch_view->info.height,
-				//          (void *)scratch_image->image);
+				// COMP_INFO(c, "ILLIXR: Eye=%d, scratch_view: %ux%u, scratch_image handle: %p", eye,
+				//           scratch_view->info.width, scratch_view->info.height,
+				//           (void *)scratch_image->image);
 
 				// Populate DEPTH fields from Unity's submitted layer
 				if (proj_layer != NULL && proj_layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
@@ -2412,11 +2302,14 @@ dispatch_graphics(struct comp_renderer *r,
 					struct xrt_swapchain *depth_swapchain = proj_layer->sc_array[depth_sc_index];
 
 					if (depth_swapchain != NULL) {
-						uint32_t depth_image_index = proj_layer->data.depth.d[eye].sub.array_index;
-						struct comp_swapchain *comp_sc = (struct comp_swapchain *)depth_swapchain;
+						uint32_t depth_image_index =
+						    proj_layer->data.depth.d[eye].sub.array_index;
+						struct comp_swapchain *comp_sc =
+						    (struct comp_swapchain *)depth_swapchain;
 
 						if (depth_image_index < depth_swapchain->image_count) {
-							VkImage unity_depth_src = comp_sc->vkic.images[depth_image_index].handle;
+							VkImage unity_depth_src =
+							    comp_sc->vkic.images[depth_image_index].handle;
 
 							// Step 1: Downsample Unity's depth to our depth buffer
 							VkImageMemoryBarrier barrier = {
@@ -2428,19 +2321,20 @@ dispatch_graphics(struct comp_renderer *r,
 							    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 							    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 							    .image = unity_depth_src,
-							    .subresourceRange = {
-							        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-							        .baseMipLevel = 0,
-							        .levelCount = 1,
-							        .baseArrayLayer = 0,
-							        .layerCount = 1,
-							    },
+							    .subresourceRange =
+							        {
+							            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+							            .baseMipLevel = 0,
+							            .levelCount = 1,
+							            .baseArrayLayer = 0,
+							            .layerCount = 1,
+							        },
 							};
 
 							vk->vkCmdPipelineBarrier(render->r->cmd,
 							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-							                         0, 0, NULL, 0, NULL, 1, &barrier);
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &barrier);
 
 							// Transition our downsampled depth to TRANSFER_DST
 							barrier.srcAccessMask = 0;
@@ -2451,25 +2345,32 @@ dispatch_graphics(struct comp_renderer *r,
 
 							vk->vkCmdPipelineBarrier(render->r->cmd,
 							                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-							                         0, 0, NULL, 0, NULL, 1, &barrier);
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &barrier);
 
-							// Blit depth (downsample with NEAREST filter)
+							// Blit depth (downsample with NEAREST filter).
+							// Source extents come from Unity's depth swapchain, which is
+							// full render resolution and unrelated to scratch or color
+							// downsampled size. Destination extents come from
+							// illixr_depth_downsampled, which is sized to
+							// MOTION_VECTOR_WIDTH x MOTION_VECTOR_HEIGHT.
 							VkImageBlit depth_blit = {
 							    .srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
 							    .srcOffsets = {{0, 0, 0},
-							                   {scratch_view->info.width, scratch_view->info.height, 1}},
+							                   {comp_sc->vkic.info.width,
+							                    comp_sc->vkic.info.height, 1}},
 							    .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
 							    .dstOffsets = {{0, 0, 0},
 							                   {r->illixr_depth_downsampled[fb_idx].width,
-							                    r->illixr_depth_downsampled[fb_idx].height, 1}},
+							                    r->illixr_depth_downsampled[fb_idx].height,
+							                    1}},
 							};
 
-							vk->vkCmdBlitImage(render->r->cmd,
-							                   unity_depth_src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-							                   r->illixr_depth_downsampled[fb_idx].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-							                   1, &depth_blit,
-							                   VK_FILTER_NEAREST);
+							vk->vkCmdBlitImage(render->r->cmd, unity_depth_src,
+							                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							                   r->illixr_depth_downsampled[fb_idx].image,
+							                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+							                   &depth_blit, VK_FILTER_NEAREST);
 
 							// Step 2: Convert depth to RG with compute shader
 							// Transition depth to shader read
@@ -2498,14 +2399,17 @@ dispatch_graphics(struct comp_renderer *r,
 							                         0, 0, NULL, 0, NULL, 1, &barrier);
 
 							// Dispatch compute shader (depth16 → RG8)
-							vk->vkCmdBindPipeline(render->r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+							vk->vkCmdBindPipeline(render->r->cmd,
+							                      VK_PIPELINE_BIND_POINT_COMPUTE,
 							                      r->depth_to_rg_pipeline);
-							vk->vkCmdBindDescriptorSets(render->r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-							                            r->depth_to_rg_layout, 0, 1,
-							                            &r->depth_to_rg_desc_sets[fb_idx], 0, NULL);
+							vk->vkCmdBindDescriptorSets(
+							    render->r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+							    r->depth_to_rg_layout, 0, 1,
+							    &r->depth_to_rg_desc_sets[fb_idx], 0, NULL);
 
 							uint32_t group_x = (r->illixr_depth_rg[fb_idx].width + 15) / 16;
-							uint32_t group_y = (r->illixr_depth_rg[fb_idx].height + 15) / 16;
+							uint32_t group_y =
+							    (r->illixr_depth_rg[fb_idx].height + 15) / 16;
 							vk->vkCmdDispatch(render->r->cmd, group_x, group_y, 1);
 
 							// Transition RG to transfer src for export
@@ -2517,21 +2421,28 @@ dispatch_graphics(struct comp_renderer *r,
 
 							vk->vkCmdPipelineBarrier(render->r->cmd,
 							                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-							                         0, 0, NULL, 0, NULL, 1, &barrier);
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &barrier);
 
 							// Step 3: Export RG depth to framebuffers (for ILLIXR encoder)
-							r->illixr_framebuffers[fb_idx].depth_image = r->illixr_depth_rg[fb_idx].image;
-							r->illixr_framebuffers[fb_idx].depth_memory = r->illixr_depth_rg[fb_idx].memory;
-							r->illixr_framebuffers[fb_idx].depth_view = r->illixr_depth_rg[fb_idx].view;
-							r->illixr_framebuffers[fb_idx].depth_extent.width = r->illixr_depth_rg[fb_idx].width;
-							r->illixr_framebuffers[fb_idx].depth_extent.height = r->illixr_depth_rg[fb_idx].height;
-							r->illixr_framebuffers[fb_idx].depth_size = r->illixr_depth_rg[fb_idx].memory_size;
+							r->illixr_framebuffers[fb_idx].depth_image =
+							    r->illixr_depth_rg[fb_idx].image;
+							r->illixr_framebuffers[fb_idx].depth_memory =
+							    r->illixr_depth_rg[fb_idx].memory;
+							r->illixr_framebuffers[fb_idx].depth_view =
+							    r->illixr_depth_rg[fb_idx].view;
+							r->illixr_framebuffers[fb_idx].depth_extent.width =
+							    r->illixr_depth_rg[fb_idx].width;
+							r->illixr_framebuffers[fb_idx].depth_extent.height =
+							    r->illixr_depth_rg[fb_idx].height;
+							r->illixr_framebuffers[fb_idx].depth_size =
+							    r->illixr_depth_rg[fb_idx].memory_size;
 							r->illixr_framebuffers[fb_idx].depth_offset = 0;
 
 							// Projection clip planes from XrCompositionLayerDepthInfoKHR.
 							// Unity writes these into the depth layer; forward them so the
-							// decoder can linearise depth values back into view-space metres.
+							// decoder can linearise depth values back into view-space
+							// metres.
 							r->illixr_framebuffers[fb_idx].near_z =
 							    proj_layer->data.depth.d[eye].near_z;
 							r->illixr_framebuffers[fb_idx].far_z =
@@ -2539,7 +2450,8 @@ dispatch_graphics(struct comp_renderer *r,
 
 							// Calculate buffer_idx for logging
 							uint32_t buffer_idx = fb_idx / 2;
-							//COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d (D16→RG)", buffer_idx, eye);
+							// COMP_INFO(c, "ILLIXR: Processed depth for buffer %d eye %d
+							// (D16→RG)", buffer_idx, eye);
 						}
 					}
 				} else {
@@ -2552,21 +2464,21 @@ dispatch_graphics(struct comp_renderer *r,
 					r->illixr_framebuffers[fb_idx].depth_extent.width = 0;
 					r->illixr_framebuffers[fb_idx].depth_extent.height = 0;
 					r->illixr_framebuffers[fb_idx].near_z = 0.0f;
-					r->illixr_framebuffers[fb_idx].far_z  = 0.0f;
+					r->illixr_framebuffers[fb_idx].far_z = 0.0f;
 
 					if (eye == 0) { // Only log once
 						COMP_WARN(c, "ILLIXR: No depth layer (type=%d)",
-						           proj_layer ? proj_layer->data.type : -1);
+						          proj_layer ? proj_layer->data.type : -1);
 					}
 				}
 
-                                // ILLIXR: Extract motion vectors from the MV swapchain via
-			        // shared memory ring index.
+				// ILLIXR: Extract motion vectors from the MV swapchain via
+				// shared memory ring index.
 				if (mv_shmem_valid && g_illixr_mv_sc != NULL) {
-					//if (eye == 0) {
-						//COMP_WARN(c, "ILLIXR: MV shmem valid: ring=%u seq=%u", mv_ring_index,
-						//          g_illixr_last_seq);
-						
+					// if (eye == 0) {
+					// COMP_WARN(c, "ILLIXR: MV shmem valid: ring=%u seq=%u", mv_ring_index,
+					//           g_illixr_last_seq);
+
 					//}
 					{
 						uint32_t mv_img_idx = mv_ring_index;
@@ -2580,7 +2492,8 @@ dispatch_graphics(struct comp_renderer *r,
 							uint32_t mv_h = mv_comp_sc->vkic.info.height;
 
 							// Motion vector images are created eagerly in the
-							// illixr_downsampled_created block above; no lazy-create needed.
+							// illixr_downsampled_created block above; no lazy-create
+							// needed.
 
 							// Transition Unity's swapchain image → TRANSFER_SRC
 							VkImageMemoryBarrier mv_barrier = {
@@ -2663,10 +2576,9 @@ dispatch_graphics(struct comp_renderer *r,
 					}
 				} else {
 					if (eye == 0) {
-						//COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
-						//          (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
+						// COMP_WARN(c, "ILLIXR: NO MV data (shmem_valid=%d sc=%p)",
+						//           (int)mv_shmem_valid, (void *)g_illixr_mv_sc);
 					}
-
 				}
 				// Note: when mv_layer is NULL (no sentinel quad this frame) the
 				// motion_vec_image handle is left intact.  The VkImage was
@@ -2674,7 +2586,7 @@ dispatch_graphics(struct comp_renderer *r,
 				// valid for the lifetime of the renderer; nulling it here would
 				// prevent nvenc_import_buffer_pool_images from importing it on
 				// frames that precede Unity's first sentinel quad submission.
-				//COMP_DEBUG(c, "ILLIXR: Framebuffer %d - color=%p, depth=%p", fb_idx,
+				// COMP_DEBUG(c, "ILLIXR: Framebuffer %d - color=%p, depth=%p", fb_idx,
 				//           (void *)scratch_image->image,
 				//           (void *)r->illixr_framebuffers[fb_idx].depth_image);
 			}
@@ -2693,58 +2605,58 @@ dispatch_graphics(struct comp_renderer *r,
 	 * ILLIXR: Wait for GPU and release buffer to encoder
 	 */
 	if (illixr_buffer_index >= 0 && strcmp(r->c->xdev->str, "ILLIXR") == 0) {
-		//COMP_INFO(c, "ILLIXR: Waiting for GPU to complete all work");
+		// COMP_INFO(c, "ILLIXR: Waiting for GPU to complete all work");
 
 		// Wait for ALL GPU work to complete before releasing to encoder
 		vk->vkQueueWaitIdle(vk->queue);
 
 		/* for (int i = 0; i < unity_save_index; i++) {
-			if (!unity_raw_saves[i].pending)
-				continue;
+		        if (!unity_raw_saves[i].pending)
+		                continue;
 
-			uint32_t width = unity_raw_saves[i].width;
-			uint32_t height = unity_raw_saves[i].height;
-			VkDeviceSize buffer_size = width * height * 4;
+		        uint32_t width = unity_raw_saves[i].width;
+		        uint32_t height = unity_raw_saves[i].height;
+		        VkDeviceSize buffer_size = width * height * 4;
 
-			void *data;
-			vk->vkMapMemory(vk->device, unity_raw_saves[i].memory, 0, buffer_size, 0, &data);
+		        void *data;
+		        vk->vkMapMemory(vk->device, unity_raw_saves[i].memory, 0, buffer_size, 0, &data);
 
-			// Save to PPM in CURRENT WORKING DIRECTORY
-			char filename[256];
-			snprintf(filename, sizeof(filename), "D:/unity_raw_%03d_eye%d.ppm", unity_save_count,
-			         unity_raw_saves[i].eye);
+		        // Save to PPM in CURRENT WORKING DIRECTORY
+		        char filename[256];
+		        snprintf(filename, sizeof(filename), "D:/unity_raw_%03d_eye%d.ppm", unity_save_count,
+		                 unity_raw_saves[i].eye);
 
-			FILE *f = fopen(filename, "wb");
-			if (f) {
-				fprintf(f, "P6\n%d %d\n255\n", width, height);
+		        FILE *f = fopen(filename, "wb");
+		        if (f) {
+		                fprintf(f, "P6\n%d %d\n255\n", width, height);
 
-				// Convert RGBA to RGB
-				uint8_t *pixels = (uint8_t *)data;
-				for (uint32_t j = 0; j < width * height; j++) {
-					fwrite(&pixels[j * 4], 1, 3, f); // R,G,B (skip A)
-				}
+		                // Convert RGBA to RGB
+		                uint8_t *pixels = (uint8_t *)data;
+		                for (uint32_t j = 0; j < width * height; j++) {
+		                        fwrite(&pixels[j * 4], 1, 3, f); // R,G,B (skip A)
+		                }
 
-				fclose(f);
-				COMP_INFO(c, "ILLIXR: Saved Unity raw image to %s", filename);
-			} else {
-				COMP_ERROR(c, "ILLIXR: Failed to open %s for writing", filename);
-			}
+		                fclose(f);
+		                COMP_INFO(c, "ILLIXR: Saved Unity raw image to %s", filename);
+		        } else {
+		                COMP_ERROR(c, "ILLIXR: Failed to open %s for writing", filename);
+		        }
 
-			vk->vkUnmapMemory(vk->device, unity_raw_saves[i].memory);
+		        vk->vkUnmapMemory(vk->device, unity_raw_saves[i].memory);
 
-			// Cleanup
-			vk->vkDestroyBuffer(vk->device, unity_raw_saves[i].buffer, NULL);
-			vk->vkFreeMemory(vk->device, unity_raw_saves[i].memory, NULL);
+		        // Cleanup
+		        vk->vkDestroyBuffer(vk->device, unity_raw_saves[i].buffer, NULL);
+		        vk->vkFreeMemory(vk->device, unity_raw_saves[i].memory, NULL);
 
-			unity_raw_saves[i].pending = false;
+		        unity_raw_saves[i].pending = false;
 		}
 
 		if (unity_save_index > 0) {
-			unity_save_count++;
-			unity_save_index = 0; // Reset for next frame
+		        unity_save_count++;
+		        unity_save_index = 0; // Reset for next frame
 		}*/
 
-		//COMP_INFO(c, "ILLIXR: GPU work complete, releasing buffer for encoding");
+		// COMP_INFO(c, "ILLIXR: GPU work complete, releasing buffer for encoding");
 
 		// Extract poses from projection layer
 		struct xrt_pose left_pose = {.orientation = {.x = 0, .y = 0, .z = 0, .w = 1}};
@@ -2775,7 +2687,7 @@ dispatch_graphics(struct comp_renderer *r,
 		// Release buffer to encoder (now safe - GPU is done)
 		illixr_src_release(illixr_buffer_index, left_pose, right_pose);
 
-		//COMP_INFO(c, "ILLIXR: Buffer %d released successfully", illixr_buffer_index);
+		// COMP_INFO(c, "ILLIXR: Buffer %d released successfully", illixr_buffer_index);
 	}
 #endif
 	return ret;

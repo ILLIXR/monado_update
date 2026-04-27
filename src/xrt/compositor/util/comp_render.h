@@ -389,7 +389,16 @@ comp_render_gfx_dispatch(struct render_gfx *render,
                          const uint32_t layer_count,
                          const struct comp_render_dispatch_data *d);
 
-/* end of comp_render_gfx group */
+#ifdef USE_MONADO_ILLIXR_DRIVER
+/*!
+ * ILLIXR: composite already-populated per-eye scratch images through the
+ * identity distortion mesh, bypassing the layer squasher and its pose math.
+ */
+void
+comp_render_gfx_distortion_from_scratch(struct render_gfx *render,
+                                	const struct comp_render_dispatch_data *d);
+#endif
+    /* end of comp_render_gfx group */
 
 /*! @} */
 
