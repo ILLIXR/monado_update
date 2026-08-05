@@ -393,6 +393,8 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 		illixr/illixr_prober.c
 		illixr/illixr_component.cpp
 		illixr/illixr_component.h
+		illixr/illixr_plugin.hpp
+		illixr/illixr_plugin.cpp
 		)
 	target_link_libraries(drv_illixr PUBLIC
 	                      ${CMAKE_DL_LIBS}
@@ -409,6 +411,10 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 	)
 	list(APPEND ENABLED_HEADSET_DRIVERS illixr)
 	target_compile_definitions(drv_illixr PRIVATE BUILDING_MONADO_ILLIXR_DRIVER ENABLE_MONADO USING_OPENXR)
+	
+	if (WIN32 OR MSVC)
+		target_compile_definitions(drv_illixr PRIVATE BUILDING_LIBRARY)
+	endif()
 endif()
 
 add_library(drv_multi STATIC multi_wrapper/multi.c multi_wrapper/multi.h)
