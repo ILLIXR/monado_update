@@ -9,8 +9,8 @@ illixr_plugin::illixr_plugin(const std::string &name_, phonebook *pb_)
       , ds{std::make_shared<monado_vulkan_display_provider>()}
       , _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")}
       , signal_writer_{sb->get_network_writer<data_format::illixr_signal>("offload_signal", 
-                                                                        {.serialization_method=network::topic_config::BOOST,
-                                                                         .transport_method=network::topic_config::UDP
+                                                                        {network::topic_config::BOOST,
+                                                                         network::topic_config::UDP
                                                                         })}
       , hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")}
       , hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")}
