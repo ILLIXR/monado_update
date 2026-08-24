@@ -39,7 +39,7 @@ illixr_create_auto_prober(void);
 struct xrt_device *
 illixr_hmd_create(const char *path, const char *comp);
 
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 /*!
  * Create an XR_EXT_hand_interaction device for one hand.
  *

@@ -27,9 +27,6 @@
 #include <thread>
 #include <vector>
 
-#ifndef USING_OPENXR
-#define USING_OPENXR
-#endif
 #include "illixr/phonebook.hpp"
 #include "illixr/plugin.hpp"
 #include "illixr/switchboard.hpp"
@@ -169,7 +166,7 @@ illixr_read_head_relation(int64_t at_timestamp_ns)
  * Hand-joint tracking functions
  *
  */
-
+#ifdef USING_OPENXR
 extern "C" bool
 illixr_hand_tracking_supported(void)
 {
@@ -282,7 +279,7 @@ illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_
 	out_data->valid = src.is_valid();
 	return out_data->valid;
 }
-
+#endif
 /*
  *
  * Vulkan display service functions
