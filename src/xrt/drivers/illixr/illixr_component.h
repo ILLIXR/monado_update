@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 /*
  *
  * Hand-joint tracking constants and structures
@@ -44,7 +44,6 @@ struct illixr_hand_tracking_data
 	struct xrt_hand_joint_set right_hand; //!< Right hand joint data
 	bool valid;                           //!< Whether this struct contains valid data
 };
-#endif
 /**
  * @brief A single hand interaction pose with its accompanying scalar inputs.
  *
@@ -59,7 +58,6 @@ struct illixr_interaction_pose
 	bool valid;  //!< Whether this pose is valid
 };
 
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
 #define ILLIXR_INTERACTION_AIM 0   /*!< /input/aim/pose + aim_activate_ext scalars   */
 #define ILLIXR_INTERACTION_GRIP 1  /*!< /input/grip/pose + grasp_ext scalars          */
 #define ILLIXR_INTERACTION_PINCH 2 /*!< /input/pinch_ext/pose + pinch_ext scalars     */
@@ -108,7 +106,7 @@ illixr_monado_wait_for_init(void);
 struct xrt_pose
 illixr_read_pose(void);
 
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 /*
  *
  * Hand-tracking functions (XR_EXT_hand_tracking)
@@ -165,7 +163,7 @@ illixr_read_head_relation(int64_t at_timestamp_ns);
  * @param hand  0 = left, 1 = right
  */
 
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 /**
  * @brief Read hand-interaction poses for both hands from the switchboard.
  * @param out_interactions Output struct to populate; out_interactions->valid set to false on failure

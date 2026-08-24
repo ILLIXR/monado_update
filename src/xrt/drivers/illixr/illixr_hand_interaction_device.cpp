@@ -6,7 +6,7 @@
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 
 #include <assert.h>
 #include <chrono>

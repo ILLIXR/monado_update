@@ -60,7 +60,7 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 	// Check environment variables for INTENT to use hand tracking
 	bool ht_enabled = false;
 
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 	const char *ht_env = getenv("ILLIXR_USE_HAND_TRACKING");
 	if (ht_env != NULL) {
 		char v1[] = "1";
@@ -87,7 +87,7 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 	}
 	if (!ht_enabled)
 		return 1;
-#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#ifdef USING_OPENXR
 	// Hand interaction devices — created after the HMD so the runtime is
 	// already running and the switchboard topics are available.
 	out_xdevs[1] = illixr_hand_interaction_device_create(0, out_xdevs[0]->tracking_origin); // left
