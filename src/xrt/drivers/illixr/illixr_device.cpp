@@ -41,12 +41,14 @@
 
 #include "illixr_component.h"
 #include "illixr_device_common.h"
+#include "illixr_plugin.hpp"
 
 /*
  *
  * Structs and defines.
  *
  */
+static std::shared_ptr<illixr_plugin> illixr_plugin_ = nullptr;
 
 struct illixr_hmd
 {
@@ -124,7 +126,9 @@ illixr_hmd_get_view_poses(struct xrt_device *xdev,
                           struct xrt_fov *out_fovs,
                           struct xrt_pose *out_poses)
 {
-	u_device_get_view_poses(xdev, default_eye_relation, at_timestamp_ns, view_count, out_head_relation, out_fovs,
+	struct xrt_vec3 ipd = *default_eye_relation;
+	ipd.x = illixr_plugin_->ipd();
+	u_device_get_view_poses(xdev, &ipd, at_timestamp_ns, view_count, out_head_relation, out_fovs,
 	                        out_poses);
 }
 
@@ -140,28 +144,6 @@ split(const std::string &s, char delimiter)
 	return tokens;
 }
 
-static uint32_t
-get_server_width()
-{
-	if (std::getenv("ILLIXR_SERVER_WIDTH") == nullptr) {
-		printf("[Monado] Display width not specified, defaulting to %d pixels.\n",
-		       ILLIXR::display_params::width_pixels);
-		return ILLIXR::display_params::width_pixels;
-	}
-	return std::stoi(std::getenv("ILLIXR_SERVER_WIDTH"));
-}
-
-static uint32_t
-get_server_height()
-{
-	if (std::getenv("ILLIXR_SERVER_HEIGHT") == nullptr) {
-		printf("[Monado] Display height not specified, defaulting to %d pixels.\n",
-		       ILLIXR::display_params::height_pixels);
-		return ILLIXR::display_params::height_pixels;
-	}
-	return std::stoi(std::getenv("ILLIXR_SERVER_HEIGHT"));
-}
-
 static int
 illixr_rt_launch(struct illixr_hmd *dh, const char *path, const char *comp)
 {
@@ -173,7 +155,7 @@ illixr_rt_launch(struct illixr_hmd *dh, const char *path, const char *comp)
 	dh->runtime->load_so(split(std::string{comp}, ':'));
 #endif
 	dh->runtime->load_plugin_factory((ILLIXR::plugin_factory)illixr_monado_create_plugin);
-
+	illixr_plugin_ = std::dynamic_pointer_cast<illixr_plugin>(dh->runtime->get_last_plugin());
 	return 0;
 }
 
@@ -241,13 +223,21 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
 	}
 
+	// start ILLIXR runtime
+	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
+		DH_ERROR(dh, "Failed to load ILLIXR Runtime");
+		illixr_hmd_destroy(&dh->base);
+		return NULL;
+	}
+	
+	hmd_config cfg = illixr_plugin_->get_config(scale);
 	// Setup info.
 	struct u_device_simple_info info;
-	info.display.w_pixels = (uint32_t)(get_server_width() * scale * 2);
-	info.display.h_pixels = (uint32_t)(get_server_height() * scale);
+	info.display.w_pixels = (uint32_t)(cfg.recommended_image_width * 2);
+	info.display.h_pixels = (uint32_t)(cfg.recommended_image_height);
 	info.display.w_meters = 0.122f;
 	info.display.h_meters = 0.07f;
-	info.lens_horizontal_separation_meters = 0.13f / 2.0f;
+	info.lens_horizontal_separation_meters = illixr_plugin_->hmd_config_.ipd / 1000.f;
 	info.lens_vertical_position_meters = 0.07f / 2.0f;
 	info.fov[0] = 85.0f * (M_PI / 180.0f);
 	info.fov[1] = 85.0f * (M_PI / 180.0f);
@@ -260,15 +250,10 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 
 	// The server may render at a different FOV than the client.
 	for (int eye = 0; eye < 2; eye++) {
-		float fov_left = scale * ILLIXR::server_params::fov_left[eye];
-		float fov_right = scale * ILLIXR::server_params::fov_right[eye];
-		float fov_up = scale * ILLIXR::server_params::fov_up[eye];
-		float fov_down = scale * ILLIXR::server_params::fov_down[eye];
-
-		dh->base.hmd->distortion.fov[eye].angle_left = fov_left;
-		dh->base.hmd->distortion.fov[eye].angle_right = fov_right;
-		dh->base.hmd->distortion.fov[eye].angle_up = fov_up;
-		dh->base.hmd->distortion.fov[eye].angle_down = fov_down;
+		dh->base.hmd->distortion.fov[eye].angle_left = cfg.fov_angle_left[eye];
+		dh->base.hmd->distortion.fov[eye].angle_right = cfg.fov_angle_right[eye];
+		dh->base.hmd->distortion.fov[eye].angle_up = cfg.fov_angle_up[eye];
+		dh->base.hmd->distortion.fov[eye].angle_down = cfg.fov_angle_down[eye];
 	}
 
 	// Setup variable tracker.
@@ -283,14 +268,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	dh->base.hmd->distortion.preferred = XRT_DISTORTION_MODEL_COMPUTE;
 	dh->base.compute_distortion = illixr_compute_distortion;
 	u_distortion_mesh_fill_in_compute(&dh->base);
-
-	// start ILLIXR runtime
-	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
-		DH_ERROR(dh, "Failed to load ILLIXR Runtime");
-		illixr_hmd_destroy(&dh->base);
-		return NULL;
-	}
-
+	
 	printf("[ILLIXR] ==========================================\n");
 	printf("[ILLIXR] HMD device created successfully\n");
 	printf("[ILLIXR]   ILLIXR_OFFLOAD_FRAMES=%s\n",
