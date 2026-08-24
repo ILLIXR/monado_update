@@ -32,9 +32,11 @@
 #include "illixr/switchboard.hpp"
 #include "illixr/data_format/pose_prediction.hpp"
 #include "illixr/data_format/latency_data.hpp"
+#ifdef #ifdef USING_OPENXR
 #include "illixr/data_format/poses/hand_interaction_pose.hpp"
 #include "illixr/data_format/poses/hand_pose.hpp"
 #include "illixr/data_format/poses/palm_pose.hpp"
+#endif
 #include "illixr/vk/display_provider.hpp"
 #include "illixr/vk/render_pass.hpp"
 #include "illixr/vk/vulkan_objects.hpp"
@@ -71,9 +73,11 @@ public:
 	    , sb_clock{phonebook_->lookup_impl<relative_clock>()}
 	    , ds{std::make_shared<monado_vulkan_display_provider>()}
 	    , _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")}
+#ifdef USING_OPENXR
 	    , hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")}
 	    , hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")}
 	    , palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
+#endif
 	    , latency_reader_{sb->get_reader<latency_ping>("latency_ping")}
 	{
 		sb_timewarp = pb_->lookup_impl<timewarp>();
@@ -86,6 +90,7 @@ public:
 			sleep_time = std::stoi(std::getenv("ILLIXR_COMPOSITOR_SLEEP_NS"));
 		}
 
+#ifdef USING_OPENXR
 		// Check if hand tracking is enabled
 		if (std::getenv("ILLIXR_USE_HAND_TRACKING") != nullptr) {
 			std::string val = std::getenv("ILLIXR_USE_HAND_TRACKING");
@@ -104,15 +109,18 @@ public:
 			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
 			hand_interactions_enabled_ = (val == "1" || val == "true" || val == "TRUE");
 		}
+#endif
 	}
 
 	std::atomic<bool> ready = false;
 
-	bool offload_frames             = false;
-	int  sleep_time                 = -1;
-	bool hand_tracking_enabled_     = false;
+	bool offload_frames = false;
+	int sleep_time      = -1;
+#ifdef USING_OPENXR
+    bool hand_tracking_enabled_     = false;
 	bool palm_poses_enabled_        = false;
 	bool hand_interactions_enabled_ = false;
+#endif
 
 	phonebook *pb;
 	const std::shared_ptr<switchboard>      sb;
@@ -125,10 +133,12 @@ public:
 	switchboard::writer<switchboard::event_wrapper<time_point>> _m_vsync;
 
 	// Pose data readers — topics published by offload_rendering_server
-	switchboard::reader<pose::hand_joint_poses_pair>       hand_pose_reader_;
+#ifdef USING_OPENXR
+    switchboard::reader<pose::hand_joint_poses_pair> hand_pose_reader_;
 	switchboard::reader<pose::hand_interaction_poses_pair> hand_interaction_reader_;
-	switchboard::reader<pose::palm_poses_pair>             palm_pose_reader_;
-	switchboard::reader<data_format::latency_ping>         latency_reader_;
+	switchboard::reader<pose::palm_poses_pair> palm_pose_reader_;
+#endif
+	switchboard::reader<data_format::latency_ping> latency_reader_;
 
 	BUFFER_TYPE last_pose{};
 };
