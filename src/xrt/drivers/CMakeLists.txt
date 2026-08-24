@@ -407,6 +407,9 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 	                           ${ILLIXR_PATH}
 							   ${CMAKE_CURRENT_SOURCE_DIR}/../compositor
 	)
+	if(ILLIXR_ENABLE_HANDS)
+		target_compile_definitions(drv_illixr PUBLIC ILLIXR_ENABLE_HAND_TRACKING)
+	endif()
 	list(APPEND ENABLED_HEADSET_DRIVERS illixr)
 	target_compile_definitions(drv_illixr PRIVATE BUILDING_MONADO_ILLIXR_DRIVER ENABLE_MONADO USING_OPENXR)
 endif()

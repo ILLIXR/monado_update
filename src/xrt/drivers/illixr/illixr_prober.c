@@ -60,6 +60,7 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 	// Check environment variables for INTENT to use hand tracking
 	bool ht_enabled = false;
 
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
 	const char *ht_env = getenv("ILLIXR_USE_HAND_TRACKING");
 	if (ht_env != NULL) {
 		char v1[] = "1";
@@ -67,9 +68,9 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 		char v3[] = "TRUE";
 		char v4[] = "yes";
 		char v5[] = "YES";
-		
-		ht_enabled =
-		    (strcmp(ht_env, v1) == 0 || strcmp(ht_env, v2) == 0 || strcmp(ht_env, v3) == 0 || strcmp(ht_env, v4) == 0 || strcmp(ht_env, v5) == 0);
+
+		ht_enabled = (strcmp(ht_env, v1) == 0 || strcmp(ht_env, v2) == 0 || strcmp(ht_env, v3) == 0 ||
+		              strcmp(ht_env, v4) == 0 || strcmp(ht_env, v5) == 0);
 	} else {
 		// Fall back to ILLIXR_OFFLOAD_FRAMES
 		const char *offload_env = getenv("ILLIXR_OFFLOAD_FRAMES");
@@ -77,6 +78,7 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 			ht_enabled = (atoi(offload_env) != 0);
 		}
 	}
+#endif
 	// HMD device — must be created first; it launches the ILLIXR runtime
 	// and registers the monado plugin that owns the switchboard readers.
 	out_xdevs[0] = illixr_hmd_create(illixr_path, illixr_comp);
@@ -85,12 +87,13 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 	}
 	if (!ht_enabled)
 		return 1;
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
 	// Hand interaction devices — created after the HMD so the runtime is
 	// already running and the switchboard topics are available.
 	out_xdevs[1] = illixr_hand_interaction_device_create(0, out_xdevs[0]->tracking_origin); // left
 	out_xdevs[2] = illixr_hand_interaction_device_create(1, out_xdevs[0]->tracking_origin); // right
-	out_xdevs[3] = illixr_hand_tracking_device_create(0, out_xdevs[0]->tracking_origin); // left
-	out_xdevs[4] = illixr_hand_tracking_device_create(1, out_xdevs[0]->tracking_origin); // right
+	out_xdevs[3] = illixr_hand_tracking_device_create(0, out_xdevs[0]->tracking_origin);    // left
+	out_xdevs[4] = illixr_hand_tracking_device_create(1, out_xdevs[0]->tracking_origin);    // right
 
 	if (out_xdevs[1] == NULL || out_xdevs[2] == NULL) {
 		// Non-fatal: HMD still works without hand tracking devices.
@@ -120,6 +123,7 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 	}
 
 	return 5;
+#endif
 }
 
 struct xrt_auto_prober *

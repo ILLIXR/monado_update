@@ -6,6 +6,8 @@
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
+
 #include <assert.h>
 #include <chrono>
 
@@ -228,7 +230,7 @@ illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
 
 	// ---- Palm pose -------------------------------------------------------
 	if (name == XRT_INPUT_GENERIC_PALM_POSE) {
-		//struct illixr_palm_pose palm = {};
+		// struct illixr_palm_pose palm = {};
 		if (!illixr_read_palm_pose(hd->hand, out_relation)) {
 			out_relation->relation_flags = (enum xrt_space_relation_flags)0;
 			return XRT_SUCCESS;
@@ -243,19 +245,13 @@ illixr_hand_interaction_device_get_tracked_pose(struct xrt_device *xdev,
 		// This is what the hand dots in JumpSim are based on
 		pose_slot = ILLIXR_INTERACTION_AIM;
 		break;
-	case XRT_INPUT_HAND_GRIP_POSE:
-		pose_slot = ILLIXR_INTERACTION_GRIP;
-		break;
+	case XRT_INPUT_HAND_GRIP_POSE: pose_slot = ILLIXR_INTERACTION_GRIP; break;
 	case XRT_INPUT_HAND_PINCH_POSE:
 		// Pinch does not seem to flow through right
 		pose_slot = ILLIXR_INTERACTION_PINCH;
 		break;
-	case XRT_INPUT_HAND_POKE_POSE:
-		pose_slot = ILLIXR_INTERACTION_POKE;
-		break;
-	default:
-		HD_ERROR(hd, "unknown input name %d", (int)name);
-		return XRT_ERROR_INPUT_UNSUPPORTED;
+	case XRT_INPUT_HAND_POKE_POSE: pose_slot = ILLIXR_INTERACTION_POKE; break;
+	default: HD_ERROR(hd, "unknown input name %d", (int)name); return XRT_ERROR_INPUT_UNSUPPORTED;
 	}
 
 	struct illixr_hand_interaction_data data = {};
@@ -341,3 +337,4 @@ illixr_hand_interaction_device_create(int hand, struct xrt_tracking_origin *orig
 
 	return &hd->base;
 }
+#endif

@@ -23,6 +23,7 @@
 extern "C" {
 #endif
 
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
 /*
  *
  * Hand-joint tracking constants and structures
@@ -37,40 +38,43 @@ extern "C" {
 /**
  * @brief Joint tracking data for both hands.
  */
-struct illixr_hand_tracking_data {
-    struct xrt_hand_joint_set left_hand;  //!< Left hand joint data
-    struct xrt_hand_joint_set right_hand; //!< Right hand joint data
-    bool valid;                           //!< Whether this struct contains valid data
+struct illixr_hand_tracking_data
+{
+	struct xrt_hand_joint_set left_hand;  //!< Left hand joint data
+	struct xrt_hand_joint_set right_hand; //!< Right hand joint data
+	bool valid;                           //!< Whether this struct contains valid data
 };
-
+#endif
 /**
  * @brief A single hand interaction pose with its accompanying scalar inputs.
  *
  * Used for AIM, GRIP, PINCH, and POKE pose types.  @c value and @c ready are
  * meaningful only for AIM, GRIP, and PINCH; they are always 0 / false for POKE.
  */
-struct illixr_interaction_pose {
-    struct xrt_space_relation relation;
-    float           value;       //!< Gesture-strength scalar in [0, 1]
-    bool            ready;       //!< Whether the gesture is currently activatable
-    bool            valid;       //!< Whether this pose is valid
+struct illixr_interaction_pose
+{
+	struct xrt_space_relation relation;
+	float value; //!< Gesture-strength scalar in [0, 1]
+	bool ready;  //!< Whether the gesture is currently activatable
+	bool valid;  //!< Whether this pose is valid
 };
- 
 
-#define ILLIXR_INTERACTION_AIM   0 /*!< /input/aim/pose + aim_activate_ext scalars   */
-#define ILLIXR_INTERACTION_GRIP  1 /*!< /input/grip/pose + grasp_ext scalars          */
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
+#define ILLIXR_INTERACTION_AIM 0   /*!< /input/aim/pose + aim_activate_ext scalars   */
+#define ILLIXR_INTERACTION_GRIP 1  /*!< /input/grip/pose + grasp_ext scalars          */
 #define ILLIXR_INTERACTION_PINCH 2 /*!< /input/pinch_ext/pose + pinch_ext scalars     */
-#define ILLIXR_INTERACTION_POKE  3 /*!< /input/poke_ext/pose (no scalars)             */
+#define ILLIXR_INTERACTION_POKE 3  /*!< /input/poke_ext/pose (no scalars)             */
 #define ILLIXR_NUM_INTERACTION_POSES 4
 
 /**
  * @brief All four interaction poses for one hand, indexed by ILLIXR_INTERACTION_*.
  */
-struct illixr_hand_interaction_data {
+struct illixr_hand_interaction_data
+{
 	struct illixr_interaction_pose poses[ILLIXR_NUM_INTERACTION_POSES];
 	bool valid; //!< Whether any pose data is available for this hand
 };
-
+#endif
 /*
  *
  * Plugin lifecycle functions
@@ -104,6 +108,7 @@ illixr_monado_wait_for_init(void);
 struct xrt_pose
 illixr_read_pose(void);
 
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
 /*
  *
  * Hand-tracking functions (XR_EXT_hand_tracking)
@@ -113,14 +118,16 @@ illixr_read_pose(void);
 /**
  * @brief Returns true if hand-joint tracking data is available on the switchboard.
  */
-bool illixr_hand_tracking_supported(void);
+bool
+illixr_hand_tracking_supported(void);
 
 /**
  * @brief Read joint tracking data for both hands.
  * @param out_data Output struct to populate; out_data->valid set to false on failure
  * @return true if valid data was written
  */
-bool illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data);
+bool
+illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data);
 
 /**
  * @brief Read joint tracking data for one hand.
@@ -128,7 +135,8 @@ bool illixr_read_hand_tracking(struct illixr_hand_tracking_data *out_data);
  * @param out_hand  Output struct to populate
  * @return true if valid data was written
  */
-bool illixr_read_single_hand(int hand, struct xrt_hand_joint_set *out_hand);
+bool
+illixr_read_single_hand(int hand, struct xrt_hand_joint_set *out_hand);
 
 /*
  *
@@ -142,7 +150,10 @@ bool illixr_read_single_hand(int hand, struct xrt_hand_joint_set *out_hand);
  * @param out_poses Output struct to populate; out_poses->valid set to false on failure
  * @return true if valid data was written
  */
-bool illixr_read_palm_pose(int hand, struct xrt_space_relation *out_pose);
+bool
+illixr_read_palm_pose(int hand, struct xrt_space_relation *out_pose);
+
+#endif
 
 struct xrt_space_relation
 illixr_read_head_relation(int64_t at_timestamp_ns);
@@ -154,12 +165,16 @@ illixr_read_head_relation(int64_t at_timestamp_ns);
  * @param hand  0 = left, 1 = right
  */
 
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
 /**
  * @brief Read hand-interaction poses for both hands from the switchboard.
  * @param out_interactions Output struct to populate; out_interactions->valid set to false on failure
  * @return true if valid data was written
  */
-bool illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_data);
+bool
+illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_data);
+
+#endif
 
 /*
  *
@@ -188,16 +203,25 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
                            uint32_t num_buffers_per_eye,
                            struct illixr_framebuffer *framebuffer_array);
 
-int8_t illixr_src_acquire();
-void illixr_src_release(int8_t buffer_ind, struct xrt_pose l_pose, struct xrt_pose r_pose);
-void illixr_destroy_timewarp(void);
-bool illixr_offload_frames();
-int illixr_sleep_time();
-void illixr_tw_update_uniforms(struct xrt_pose l_pose, struct xrt_pose r_pose);
-void illixr_tw_record_command_buffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, int buffer_ind, int left);
-void illixr_publish_vsync_estimate(uint64_t display_time_ns);
+int8_t
+illixr_src_acquire();
+void
+illixr_src_release(int8_t buffer_ind, struct xrt_pose l_pose, struct xrt_pose r_pose);
+void
+illixr_destroy_timewarp(void);
+bool
+illixr_offload_frames();
+int
+illixr_sleep_time();
+void
+illixr_tw_update_uniforms(struct xrt_pose l_pose, struct xrt_pose r_pose);
+void
+illixr_tw_record_command_buffer(VkCommandBuffer commandBuffer, VkFramebuffer framebuffer, int buffer_ind, int left);
+void
+illixr_publish_vsync_estimate(uint64_t display_time_ns);
 
-VkExtent2D illixr_get_extent(void);
+VkExtent2D
+illixr_get_extent(void);
 
 #ifdef __cplusplus
 }

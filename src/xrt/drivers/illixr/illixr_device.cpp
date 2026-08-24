@@ -232,7 +232,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	snprintf(dh->base.str, XRT_DEVICE_NAME_LEN, "ILLIXR");
 	snprintf(dh->base.serial, XRT_DEVICE_NAME_LEN, "ILLIXR");
 
-	// Setup inputs: head pose + hand tracking
+	// Setup inputs: head pose
 	dh->base.inputs[0].name = XRT_INPUT_GENERIC_HEAD_POSE;
 
 	// Read ILLIXR_OVERSCAN from environment variable
@@ -240,7 +240,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	if (std::getenv("ILLIXR_OVERSCAN") != nullptr) {
 		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
 	}
-	 
+
 	// Setup info.
 	struct u_device_simple_info info;
 	info.display.w_pixels = (uint32_t)(get_server_width() * scale * 2);

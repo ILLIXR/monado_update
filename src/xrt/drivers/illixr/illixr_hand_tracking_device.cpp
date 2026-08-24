@@ -6,6 +6,8 @@
  * @author RSIM Group <illixr@cs.illinois.edu>
  * @ingroup drv_illixr
  */
+#ifdef ILLIXR_ENABLE_HAND_TRACKING
+
 #include <assert.h>
 #include <chrono>
 
@@ -122,9 +124,9 @@ illixr_hand_tracking_device_destroy(struct xrt_device *xdev)
 static void
 illixr_hand_tracking_device_get_tracking(struct xrt_device *xdev,
                                          enum xrt_input_name name,
-					 int64_t desired_timestamp_ns,
-					 struct xrt_hand_joint_set *out_value,
-					 int64_t *out_timestamp_ns)
+                                         int64_t desired_timestamp_ns,
+                                         struct xrt_hand_joint_set *out_value,
+                                         int64_t *out_timestamp_ns)
 {
 	(void)desired_timestamp_ns;
 	// Return current time
@@ -263,3 +265,4 @@ illixr_hand_tracking_device_create(int hand, struct xrt_tracking_origin *origin)
 
 	return &hd->base;
 }
+#endif

@@ -229,10 +229,10 @@ illixr_read_palm_pose(int hand, struct xrt_space_relation *out_pose)
 		return false;
 	}
 
-	const ILLIXR::data_format::pose::hand side =
+	const ILLIXR::data_format::pose::side h_side =
 	    (hand == 0) ? ILLIXR::data_format::pose::LEFT : ILLIXR::data_format::pose::RIGHT;
 
-	*out_pose = palm_data->hands.at(side);
+	*out_pose = palm_data->hands.at(h_side);
 
 	if (out_pose->relation_flags == 0) {
 		return false;
@@ -265,10 +265,10 @@ illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_
 		return false;
 	}
 
-	const ILLIXR::data_format::pose::hand side =
+	const ILLIXR::data_format::pose::side h_side =
 	    (hand == 0) ? ILLIXR::data_format::pose::LEFT : ILLIXR::data_format::pose::RIGHT;
 
-	const pose::hand_interaction_poses &src = interaction_data->hands.at(side);
+	const pose::hand_interaction_poses &src = interaction_data->hands.at(h_side);
 
 	const pose::interaction_pose_type type_enums[ILLIXR_NUM_INTERACTION_POSES] = {pose::AIM, pose::GRIP,
 	                                                                              pose::PINCH, pose::POKE};
