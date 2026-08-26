@@ -26,6 +26,7 @@
 // Compatible with both MSVC (hook DLL, C++) and GCC/Clang (Monado, C).
 
 #pragma once
+#ifdef XRT_OS_WINDOWS
 
 #ifdef _WIN32
 #define ILLIXR_MV_SHMEM_NAME "Local\\ILLIXR_MotionVectors_v1"
@@ -69,4 +70,5 @@ typedef struct
 // Compile-time size check.
 #ifdef __cplusplus
 static_assert(sizeof(IllixrMvShmem) == ILLIXR_MV_SHMEM_SIZE, "IllixrMvShmem size mismatch");
+#endif
 #endif

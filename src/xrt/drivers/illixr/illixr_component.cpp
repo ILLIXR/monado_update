@@ -32,7 +32,7 @@
 #include "illixr/switchboard.hpp"
 #include "illixr/data_format/pose_prediction.hpp"
 #include "illixr/data_format/latency_data.hpp"
-#ifdef #ifdef USING_OPENXR
+#ifdef USING_OPENXR
 #include "illixr/data_format/poses/hand_interaction_pose.hpp"
 #include "illixr/data_format/poses/hand_pose.hpp"
 #include "illixr/data_format/poses/palm_pose.hpp"
@@ -66,19 +66,18 @@ class illixr_plugin : public plugin
 {
 public:
 	illixr_plugin(const std::string &name_, phonebook *pb_)
-	    : plugin{name_, pb_}
-	    , pb{pb_}
-	    , sb{phonebook_->lookup_impl<switchboard>()}
-	    , sb_pose{phonebook_->lookup_impl<pose_prediction>()}
-	    , sb_clock{phonebook_->lookup_impl<relative_clock>()}
-	    , ds{std::make_shared<monado_vulkan_display_provider>()}
-	    , _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")}
+	    : plugin{name_, pb_}, pb{pb_}, sb{phonebook_->lookup_impl<switchboard>()},
+	      sb_pose{phonebook_->lookup_impl<pose_prediction>()}, sb_clock{phonebook_->lookup_impl<relative_clock>()},
+	      ds{std::make_shared<monado_vulkan_display_provider>()},
+	      _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")}
 #ifdef USING_OPENXR
-	    , hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")}
-	    , hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")}
-	    , palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
+	      ,
+	      hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")},
+	      hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")},
+	      palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
 #endif
-	    , latency_reader_{sb->get_reader<latency_ping>("latency_ping")}
+	      ,
+	      latency_reader_{sb->get_reader<latency_ping>("latency_ping")}
 	{
 		sb_timewarp = pb_->lookup_impl<timewarp>();
 
@@ -103,7 +102,7 @@ public:
 		if (std::getenv("ILLIXR_USE_PALM_POSES") != nullptr) {
 			std::string val = std::getenv("ILLIXR_USE_PALM_POSES");
 			palm_poses_enabled_ = (val == "1" || val == "true" || val == "TRUE");
-        }
+		}
 
 		if (std::getenv("ILLIXR_USE_HAND_INTERACTIONS") != nullptr) {
 			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
@@ -115,18 +114,18 @@ public:
 	std::atomic<bool> ready = false;
 
 	bool offload_frames = false;
-	int sleep_time      = -1;
+	int sleep_time = -1;
 #ifdef USING_OPENXR
-    bool hand_tracking_enabled_     = false;
-	bool palm_poses_enabled_        = false;
+	bool hand_tracking_enabled_ = false;
+	bool palm_poses_enabled_ = false;
 	bool hand_interactions_enabled_ = false;
 #endif
 
 	phonebook *pb;
-	const std::shared_ptr<switchboard>      sb;
-	const std::shared_ptr<pose_prediction>  sb_pose;
-	const std::shared_ptr<relative_clock>   sb_clock;
-	std::shared_ptr<timewarp>               sb_timewarp;
+	const std::shared_ptr<switchboard> sb;
+	const std::shared_ptr<pose_prediction> sb_pose;
+	const std::shared_ptr<relative_clock> sb_clock;
+	std::shared_ptr<timewarp> sb_timewarp;
 	std::shared_ptr<vulkan::buffer_pool<BUFFER_TYPE>> buffer_pool;
 
 	std::shared_ptr<display_provider> ds;
@@ -134,13 +133,13 @@ public:
 
 	// Pose data readers — topics published by offload_rendering_server
 #ifdef USING_OPENXR
-    switchboard::reader<pose::hand_joint_poses_pair> hand_pose_reader_;
+	switchboard::reader<pose::hand_joint_poses_pair> hand_pose_reader_;
 	switchboard::reader<pose::hand_interaction_poses_pair> hand_interaction_reader_;
 	switchboard::reader<pose::palm_poses_pair> palm_pose_reader_;
 #endif
 	switchboard::reader<data_format::latency_ping> latency_reader_;
 
-	BUFFER_TYPE last_pose{};
+	POSE_RTN_TYPE last_pose{};
 };
 
 static illixr_plugin *illixr_plugin_obj = nullptr;
@@ -166,9 +165,20 @@ illixr_read_head_relation(int64_t at_timestamp_ns)
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
 
+#ifndef USING_OPENXR
 	struct xrt_space_relation relation = {};
-
+    POSE_TYPE h_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
+    relation.pose.position.x = h_pose.pose.position.x();
+    relation.pose.position.y = -h_pose.pose.position.y();
+    relation.pose.position.z = h_pose.pose.position.z();
+    relation.pose.orientation.w = h_pose.pose.orientation.w();
+    relation.pose.orientation.x = h_pose.pose.orientation.x();
+    relation.pose.orientation.y = h_pose.pose.orientation.y();
+    relation.pose.orientation.z = h_pose.pose.orientation.z();
+    return relation;
+#else
 	return illixr_plugin_obj->sb_pose->get_fast_pose(at_timestamp_ns);
+#endif
 }
 
 /*
@@ -312,13 +322,13 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
 	ds->queues_[queue::GRAPHICS] = {queue, queue_family_index, queue::GRAPHICS, std::make_shared<std::mutex>()};
 
 	const char *const *exts = u_string_list_get_data(enabled_instance_extensions);
-	uint32_t ext_count      = u_string_list_get_size(enabled_instance_extensions);
+	uint32_t ext_count = u_string_list_get_size(enabled_instance_extensions);
 	for (uint32_t i = 0; i < ext_count; i++) {
 		ds->enabled_instance_extensions_.push_back(exts[i]);
 	}
 
 	const char *const *dev_exts = u_string_list_get_data(enabled_device_extensions);
-	uint32_t dev_ext_count      = u_string_list_get_size(enabled_device_extensions);
+	uint32_t dev_ext_count = u_string_list_get_size(enabled_device_extensions);
 	for (uint32_t i = 0; i < dev_ext_count; i++) {
 		ds->enabled_device_extensions_.push_back(dev_exts[i]);
 	}

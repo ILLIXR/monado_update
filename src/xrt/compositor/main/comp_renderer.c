@@ -49,10 +49,15 @@
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
 #include "shaders/depth16_to_rg_spirv.h"
-#include "../drivers/illixr/illixr_mv_shmem.h"
 
 #define MOTION_VECTOR_WIDTH 432
 #define MOTION_VECTOR_HEIGHT 432
+
+// Motion vector shared memory is only produced by IllixrXrHook.dll, which
+// only ever runs inside a Windows Unity process, so the motion vector
+// feature and its shared-memory transport are Windows-only.
+#ifdef XRT_OS_WINDOWS
+#include "../drivers/illixr/illixr_mv_shmem.h"
 
 #define ILLIXR_MV_SENTINEL_SIZE 9999.0f
 // Globals defined in comp_compositor.c; extern'd here so dispatch_graphics
@@ -60,6 +65,7 @@
 extern struct comp_swapchain *g_illixr_mv_sc;
 extern IllixrMvShmem *g_illixr_shmem;
 extern uint32_t g_illixr_last_seq;
+#endif
 #endif
 
 /*
@@ -166,12 +172,16 @@ struct comp_renderer
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	struct illixr_framebuffer illixr_framebuffers[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
+	// Depth-to-RG conversion pipeline: only ever used to accompany motion
+	// vectors, so it shares their Windows-only gating (see below).
+#ifdef XRT_OS_WINDOWS
 	VkPipeline depth_to_rg_pipeline;
 	VkPipelineLayout depth_to_rg_layout;
 	VkDescriptorSetLayout depth_to_rg_desc_layout;
 	VkDescriptorPool depth_to_rg_desc_pool;
 	VkDescriptorSet depth_to_rg_desc_sets[2 * OFFLOAD_BUFFER_POOL_SIZE];
 	VkSampler depth_sampler;
+#endif
 
 	// Color downsampled images for encoding (6 total: 3 buffers × 2 eyes)
 	struct {
@@ -184,6 +194,10 @@ struct comp_renderer
 		uint32_t height;
 	} illixr_color_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
+	// Depth downsampling, its RG re-encode, and motion vectors are all only
+	// produced alongside the Windows-only Unity motion vector feature; with
+	// no motion vectors there is nothing to downsample depth for.
+#ifdef XRT_OS_WINDOWS
 	// Depth downsampled images from Unity (6 total: 3 buffers × 2 eyes)
 	struct {
 		VkImage image;
@@ -215,6 +229,7 @@ struct comp_renderer
 		uint32_t width;
 		uint32_t height;
 	} illixr_depth_rg[2 * OFFLOAD_BUFFER_POOL_SIZE];
+#endif // XRT_OS_WINDOWS
 
 	bool illixr_downsampled_created;
 #endif
@@ -656,6 +671,7 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 }
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
+#ifdef XRT_OS_WINDOWS
 
 static VkShaderModule create_embedded_shader_module(struct vk_bundle* vk) {
 	VkShaderModuleCreateInfo create_info = {
@@ -856,6 +872,7 @@ static void create_depth_to_rg_descriptors(struct comp_renderer* r) {
 	}
 }
 
+#endif // XRT_OS_WINDOWS
 #endif
 //! Create renderer and initialize non-image-dependent members
 static void
@@ -914,8 +931,10 @@ renderer_init(struct comp_renderer *r, struct comp_compositor *c, VkExtent2D scr
 		assert(false && "Whelp, can't return a error. But should never really fail.");
 	}
 #ifdef USE_MONADO_ILLIXR_DRIVER
+#ifdef XRT_OS_WINDOWS
 	create_depth_to_rg_pipeline(r);
 	create_depth_to_rg_descriptors(r);
+#endif
 #endif
 }
 
@@ -1128,6 +1147,7 @@ renderer_fini(struct comp_renderer *r)
 	struct vk_bundle *vk = &r->c->base.vk;
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
+#ifdef XRT_OS_WINDOWS
 	if (r->depth_sampler != VK_NULL_HANDLE) {
 		vk->vkDestroySampler(vk->device, r->depth_sampler, NULL);
 		r->depth_sampler = VK_NULL_HANDLE;
@@ -1147,6 +1167,7 @@ renderer_fini(struct comp_renderer *r)
 			r->illixr_motion_vectors[i].memory = VK_NULL_HANDLE;
 		}
 	}
+#endif
 #endif
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
@@ -1174,6 +1195,7 @@ renderer_fini(struct comp_renderer *r)
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
 
+#ifdef XRT_OS_WINDOWS
 static void create_illixr_depth_rg_images(struct comp_renderer* r, uint32_t width, uint32_t height) {
 	struct comp_compositor *c = r->c;
 	struct vk_bundle *vk = &c->base.vk;
@@ -1390,6 +1412,7 @@ create_illixr_motion_vector_images(struct comp_renderer *r, uint32_t width, uint
 	}
 	COMP_INFO(c, "Created %d motion vector images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
+#endif // XRT_OS_WINDOWS
 
 static void
 create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
@@ -1511,6 +1534,7 @@ create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, 
 	COMP_INFO(c, "Created %d color downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 
+#ifdef XRT_OS_WINDOWS
 static void
 create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height)
 {
@@ -1609,6 +1633,7 @@ create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, 
 
 	COMP_INFO(c, "Created %d depth downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
+#endif // XRT_OS_WINDOWS
 #endif
 
 /*!
@@ -1695,10 +1720,13 @@ dispatch_graphics(struct comp_renderer *r,
 	// Purpose: capture g_illixr_mv_sc on the first arrival.
 	// The sentinel is filtered out of the display layer list so it is not
 	// passed to comp_render_gfx_dispatch (which would try to composite it).
-	const struct comp_layer filtered_layers_storage[XRT_MAX_LAYERS];
+	// Windows/Unity-only: the sentinel quad is only ever submitted by the
+	// Unity motion-vector hook, so there is nothing to scan for on Linux.
 	const struct comp_layer *filtered_layers = layers;
 	uint32_t filtered_count = layer_count;
 
+#ifdef XRT_OS_WINDOWS
+	const struct comp_layer filtered_layers_storage[XRT_MAX_LAYERS];
 	{
 		uint32_t n = 0;
 		for (uint32_t i = 0; i < layer_count; i++) {
@@ -1756,13 +1784,14 @@ dispatch_graphics(struct comp_renderer *r,
 	} else if (g_illixr_mv_sc == NULL) {
 		// COMP_WARN(c, "ILLIXR: g_illixr_mv_sc still NULL - waiting for sentinel quad layer from Unity");
 	}
+#endif // XRT_OS_WINDOWS
 
 	if (proj_layer) {
 		static bool rect_logged = false;
 		if (!rect_logged) {
 			for (uint32_t eye = 0; eye < 2; eye++) {
 				if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
-					struct xrt_layer_projection_view_data *vd = &proj_layer->data.proj.v[eye];
+					const struct xrt_layer_projection_view_data *vd = &proj_layer->data.proj.v[eye];
 					COMP_WARN(
 					    c,
 					    "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
@@ -1772,7 +1801,7 @@ dispatch_graphics(struct comp_renderer *r,
 					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.width,
 					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.height);
 				} else {
-					struct xrt_layer_projection_view_data *vd = &proj_layer->data.depth.v[eye];
+					const struct xrt_layer_projection_view_data *vd = &proj_layer->data.depth.v[eye];
 					COMP_WARN(
 					    c,
 					    "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
@@ -1990,26 +2019,13 @@ illixr_gfx_dispatch_done:;
 				uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
 				uint32_t target_height = r->c->xdev->hmd->views[0].display.h_pixels;
 
-				uint32_t depth_width = MOTION_VECTOR_WIDTH;
-				uint32_t depth_height = MOTION_VECTOR_HEIGHT;
-
 				// Create color downsampled images
 				create_illixr_color_downsampled_images(r, target_width, target_height);
 
-				// Create depth downsampled images
-				create_illixr_depth_downsampled_images(r, depth_width, depth_height);
-
-				// Create RG depth images
-				create_illixr_depth_rg_images(r, depth_width, depth_height);
-
-				// Create depth-to-RG pipeline and descriptors
-				create_depth_to_rg_pipeline(r);
-				create_depth_to_rg_descriptors(r);
-
-				// Pre-populate ALL framebuffer slots for color and depth immediately
-				// after image creation.  nvenc_import_buffer_pool_images runs once on
-				// the first src_release, which may arrive before every buffer slot has
-				// been rendered into.  Slots whose fb->image is still VK_NULL_HANDLE are
+				// Pre-populate ALL color framebuffer slots immediately after image
+				// creation.  nvenc_import_buffer_pool_images runs once on the first
+				// src_release, which may arrive before every buffer slot has been
+				// rendered into.  Slots whose fb->image is still VK_NULL_HANDLE are
 				// skipped entirely (the continue guard in the import loop), so those
 				// encoder indices stay at -1 and later encode calls warn "not imported".
 				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
@@ -2024,6 +2040,27 @@ illixr_gfx_dispatch_done:;
 					    r->illixr_color_downsampled[i].width;
 					r->illixr_framebuffers[i].image_extent.height =
 					    r->illixr_color_downsampled[i].height;
+				}
+
+				// Depth downsampling, its RG re-encode, and motion vectors are all
+				// only produced alongside the Windows-only Unity motion vector
+				// feature; with no motion vectors there is nothing to downsample
+				// depth for.
+#ifdef XRT_OS_WINDOWS
+				uint32_t depth_width = MOTION_VECTOR_WIDTH;
+				uint32_t depth_height = MOTION_VECTOR_HEIGHT;
+
+				// Create depth downsampled images
+				create_illixr_depth_downsampled_images(r, depth_width, depth_height);
+
+				// Create RG depth images
+				create_illixr_depth_rg_images(r, depth_width, depth_height);
+
+				// Create depth-to-RG pipeline and descriptors
+				create_depth_to_rg_pipeline(r);
+				create_depth_to_rg_descriptors(r);
+
+				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
 					// DEPTH (RG image, always valid when depth is enabled)
 					r->illixr_framebuffers[i].depth_image = r->illixr_depth_rg[i].image;
 					r->illixr_framebuffers[i].depth_memory = r->illixr_depth_rg[i].memory;
@@ -2054,6 +2091,7 @@ illixr_gfx_dispatch_done:;
 					r->illixr_framebuffers[i].motion_vec_extent.width = MOTION_VECTOR_WIDTH;
 					r->illixr_framebuffers[i].motion_vec_extent.height = MOTION_VECTOR_HEIGHT;
 				}
+#endif // XRT_OS_WINDOWS
 
 				r->illixr_downsampled_created = true;
 			}
@@ -2296,7 +2334,11 @@ illixr_gfx_dispatch_done:;
 				//           scratch_view->info.width, scratch_view->info.height,
 				//           (void *)scratch_image->image);
 
-				// Populate DEPTH fields from Unity's submitted layer
+				// Populate DEPTH fields from Unity's submitted layer.
+				// Depth downsampling only accompanies the Windows-only motion
+				// vector feature; with no motion vectors there is nothing to
+				// downsample depth for.
+#ifdef XRT_OS_WINDOWS
 				if (proj_layer != NULL && proj_layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
 					uint32_t depth_sc_index = 2 + eye;
 					struct xrt_swapchain *depth_swapchain = proj_layer->sc_array[depth_sc_index];
@@ -2471,7 +2513,21 @@ illixr_gfx_dispatch_done:;
 						          proj_layer ? proj_layer->data.type : -1);
 					}
 				}
+#else
+				// No motion vectors on this platform, so no depth downsampling
+				// either; always report no depth data.
+				r->illixr_framebuffers[fb_idx].depth_image = VK_NULL_HANDLE;
+				r->illixr_framebuffers[fb_idx].depth_memory = VK_NULL_HANDLE;
+				r->illixr_framebuffers[fb_idx].depth_view = VK_NULL_HANDLE;
+				r->illixr_framebuffers[fb_idx].depth_size = 0;
+				r->illixr_framebuffers[fb_idx].depth_offset = 0;
+				r->illixr_framebuffers[fb_idx].depth_extent.width = 0;
+				r->illixr_framebuffers[fb_idx].depth_extent.height = 0;
+				r->illixr_framebuffers[fb_idx].near_z = 0.0f;
+				r->illixr_framebuffers[fb_idx].far_z = 0.0f;
+#endif // XRT_OS_WINDOWS
 
+#ifdef XRT_OS_WINDOWS
 				// ILLIXR: Extract motion vectors from the MV swapchain via
 				// shared memory ring index.
 				if (mv_shmem_valid && g_illixr_mv_sc != NULL) {
@@ -2586,6 +2642,7 @@ illixr_gfx_dispatch_done:;
 				// valid for the lifetime of the renderer; nulling it here would
 				// prevent nvenc_import_buffer_pool_images from importing it on
 				// frames that precede Unity's first sentinel quad submission.
+#endif // XRT_OS_WINDOWS
 				// COMP_DEBUG(c, "ILLIXR: Framebuffer %d - color=%p, depth=%p", fb_idx,
 				//           (void *)scratch_image->image,
 				//           (void *)r->illixr_framebuffers[fb_idx].depth_image);

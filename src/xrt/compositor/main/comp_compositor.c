@@ -90,6 +90,11 @@
 #endif
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
+
+// Motion vector shared memory is only produced by IllixrXrHook.dll, which
+// only ever runs inside a Windows Unity process, so this whole feature is
+// Windows-only and must not be compiled on Linux.
+#ifdef XRT_OS_WINDOWS
 #include "../drivers/illixr/illixr_mv_shmem.h"
 
 // ---------------------------------------------------------------------------
@@ -177,6 +182,7 @@ illixr_mv_create_swapchain(struct xrt_compositor *xc,
 	}
 	return ret;
 }
+#endif // XRT_OS_WINDOWS
 #endif
 
 #define WINDOW_TITLE "Monado"
@@ -1114,7 +1120,7 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	// Do this as early as possible.
 	comp_base_init(&c->base);
 
-#ifdef USE_MONADO_ILLIXR_DRIVER
+#if defined(USE_MONADO_ILLIXR_DRIVER) && defined(XRT_OS_WINDOWS)
 	// Wrap create_swapchain to capture the ILLIXR motion vector swapchain
 	// when Unity creates it through the IPC layer.  Must happen after
 	// comp_base_init sets the vtable.

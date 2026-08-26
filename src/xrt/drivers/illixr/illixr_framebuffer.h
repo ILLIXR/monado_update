@@ -42,7 +42,8 @@ struct illixr_framebuffer
 	VkDeviceSize depth_attachment_offset;
 	VkExtent2D depth_attachment_extent;
 
-	// Motion vector image from Unity quad layer (RGBA16F, RG = NDC delta XY)
+#ifdef XRT_OS_WINDOWS
+// Motion vector image from Unity quad layer (RGBA16F, RG = NDC delta XY)
 	VkImage motion_vec_image;
 	VkDeviceMemory motion_vec_memory;
 	VkImageView motion_vec_view;
@@ -50,6 +51,7 @@ struct illixr_framebuffer
 	VkDeviceSize motion_vec_offset;
 	VkExtent2D motion_vec_extent;
 	VkFramebuffer handle;
+#endif
 };
 
 #define OFFLOAD_BUFFER_POOL_SIZE 3

@@ -123,6 +123,8 @@ illixr_prober_autoprobe(struct xrt_auto_prober *xap,
 	}
 
 	return 5;
+#else
+    return 1;
 #endif
 }
 
