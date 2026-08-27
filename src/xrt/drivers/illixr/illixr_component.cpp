@@ -139,7 +139,7 @@ public:
 #endif
 	switchboard::reader<data_format::latency_ping> latency_reader_;
 
-	POSE_RTN_TYPE last_pose{};
+	BUFFER_TYPE last_pose{};
 };
 
 static illixr_plugin *illixr_plugin_obj = nullptr;
@@ -167,15 +167,15 @@ illixr_read_head_relation(int64_t at_timestamp_ns)
 
 #ifndef USING_OPENXR
 	struct xrt_space_relation relation = {};
-    POSE_TYPE h_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
-    relation.pose.position.x = h_pose.pose.position.x();
-    relation.pose.position.y = -h_pose.pose.position.y();
-    relation.pose.position.z = h_pose.pose.position.z();
-    relation.pose.orientation.w = h_pose.pose.orientation.w();
-    relation.pose.orientation.x = h_pose.pose.orientation.x();
-    relation.pose.orientation.y = h_pose.pose.orientation.y();
-    relation.pose.orientation.z = h_pose.pose.orientation.z();
-    return relation;
+	POSE_TYPE h_pose = illixr_plugin_obj->sb_pose->get_fast_pose();
+	relation.pose.position.x = h_pose.pose.position.x();
+	relation.pose.position.y = -h_pose.pose.position.y();
+	relation.pose.position.z = h_pose.pose.position.z();
+	relation.pose.orientation.w = h_pose.pose.orientation.w();
+	relation.pose.orientation.x = h_pose.pose.orientation.x();
+	relation.pose.orientation.y = h_pose.pose.orientation.y();
+	relation.pose.orientation.z = h_pose.pose.orientation.z();
+	return relation;
 #else
 	return illixr_plugin_obj->sb_pose->get_fast_pose(at_timestamp_ns);
 #endif
@@ -438,12 +438,13 @@ illixr_tw_update_uniforms(xrt_pose l_pose, xrt_pose r_pose)
 		}
 
 #else
-		pose::head_pose_type pose{time_point{},
-		                          Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
-		                                          (l_pose.position.y + r_pose.position.y) / 2.f,
-		                                          (l_pose.position.z + r_pose.position.z) / 2.f},
-		                          Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
-		                                             l_pose.orientation.y, l_pose.orientation.z}};
+		pose::head_pose_type h_pose{time_point{},
+                                    Eigen::Vector3f{(l_pose.position.x + r_pose.position.x) / 2.f,
+                                                    (l_pose.position.y + r_pose.position.y) / 2.f,
+                                                    (l_pose.position.z + r_pose.position.z) / 2.f},
+                                    Eigen::Quaternionf{l_pose.orientation.w, l_pose.orientation.x,
+                                                       l_pose.orientation.y, l_pose.orientation.z}};
+        pose::fast_head_pose_type pose{h_pose, time_point{}, time_point{}};
 #endif
 		illixr_plugin_obj->last_pose = pose;
 	}
