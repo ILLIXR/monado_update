@@ -7,7 +7,8 @@
  * @ingroup drv_illixr
  */
 #pragma once
-
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 // Define the framebuffer struct (duplicate from comp_renderer.h, but that's OK)
 struct illixr_framebuffer
 {
