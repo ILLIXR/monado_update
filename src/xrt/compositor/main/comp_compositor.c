@@ -821,11 +821,17 @@ compositor_init_vulkan(struct comp_compositor *c)
 	// Tie the lifetimes of swapchains to Vulkan.
 	xrt_result_t xret = comp_swapchain_shared_init(&c->base.cscs, vk);
 	if (xret != XRT_SUCCESS) {
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		u_string_list_destroy(&vk_args.enabled_instance_extensions);
+		u_string_list_destroy(&vk_args.enabled_device_extensions);
+#endif
 		return false;
 	}
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	// illixr_destroy_timewarp();
 	illixr_initialize_vulkan_display_service(vk->instance, vk->physical_device, vk->device, vk->queue, vk->queue_family_index, vk_args.enabled_instance_extensions, vk_args.enabled_device_extensions);
+	u_string_list_destroy(&vk_args.enabled_instance_extensions);
+	u_string_list_destroy(&vk_args.enabled_device_extensions);
 #endif
 	return true;
 }

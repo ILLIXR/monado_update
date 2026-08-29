@@ -178,9 +178,30 @@ illixr_read_head_relation(int64_t at_timestamp_ns)
 	relation.relation_flags = static_cast<xrt_space_relation_flags>(
 	    (uint32_t)XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | (uint32_t)XRT_SPACE_RELATION_POSITION_VALID_BIT |
 	    (uint32_t)XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT | (uint32_t)XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
+	static uint64_t pose_diag_monado_count = 0;
+	if (++pose_diag_monado_count % 300 == 1) {
+		fprintf(stderr,
+		        "[POSE_DIAG][monado_read_head_relation] count=%" PRIu64 " at=%" PRId64
+		        " src_valid=%d out_flags=0x%x pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f)\n",
+		        pose_diag_monado_count, at_timestamp_ns, h_pose.pose.valid ? 1 : 0, (unsigned)relation.relation_flags,
+		        relation.pose.position.x, relation.pose.position.y, relation.pose.position.z,
+		        relation.pose.orientation.x, relation.pose.orientation.y, relation.pose.orientation.z,
+		        relation.pose.orientation.w);
+	}
 	return relation;
 #else
-	return illixr_plugin_obj->sb_pose->get_fast_pose(at_timestamp_ns);
+	struct xrt_space_relation relation = illixr_plugin_obj->sb_pose->get_fast_pose(at_timestamp_ns);
+	static uint64_t pose_diag_monado_count = 0;
+	if (++pose_diag_monado_count % 300 == 1) {
+		fprintf(stderr,
+		        "[POSE_DIAG][monado_read_head_relation] count=%" PRIu64 " at=%" PRId64
+		        " flags=0x%x pos=(%.3f,%.3f,%.3f) ori=(%.3f,%.3f,%.3f,%.3f)\n",
+		        pose_diag_monado_count, at_timestamp_ns, (unsigned)relation.relation_flags,
+		        relation.pose.position.x, relation.pose.position.y, relation.pose.position.z,
+		        relation.pose.orientation.x, relation.pose.orientation.y, relation.pose.orientation.z,
+		        relation.pose.orientation.w);
+	}
+	return relation;
 #endif
 }
 

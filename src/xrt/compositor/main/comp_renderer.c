@@ -1708,8 +1708,8 @@ dispatch_graphics(struct comp_renderer *r,
 			for (uint32_t eye = 0; eye < 2; eye++) {
 				struct comp_swapchain *comp_sc = (struct comp_swapchain *)proj_layer->sc_array[eye];
 				if (comp_sc) {
-					COMP_WARN(c, "ILLIXR Unity swapchain eye=%u: %ux%u", eye,
-					          comp_sc->vkic.info.width, comp_sc->vkic.info.height);
+					COMP_DEBUG(c, "ILLIXR projection swapchain eye=%u: %ux%u", eye,
+					           comp_sc->vkic.info.width, comp_sc->vkic.info.height);
 				}
 			}
 			size_logged = true;
@@ -1720,8 +1720,8 @@ dispatch_graphics(struct comp_renderer *r,
 	// Purpose: capture g_illixr_mv_sc on the first arrival.
 	// The sentinel is filtered out of the display layer list so it is not
 	// passed to comp_render_gfx_dispatch (which would try to composite it).
-	// Windows/Unity-only: the sentinel quad is only ever submitted by the
-	// Unity motion-vector hook, so there is nothing to scan for on Linux.
+	// Windows-only: the sentinel quad is only submitted by the motion-vector
+	// hook, so there is nothing to scan for on Linux.
 	const struct comp_layer *filtered_layers = layers;
 	uint32_t filtered_count = layer_count;
 
@@ -1792,9 +1792,9 @@ dispatch_graphics(struct comp_renderer *r,
 			for (uint32_t eye = 0; eye < 2; eye++) {
 				if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
 					const struct xrt_layer_projection_view_data *vd = &proj_layer->data.proj.v[eye];
-					COMP_WARN(
+					COMP_DEBUG(
 					    c,
-					    "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
+					    "OpenXR projection imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
 					    "swapchain=(%u,%u)",
 					    eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h, vd->sub.rect.extent.w,
 					    vd->sub.rect.extent.h,
@@ -1802,9 +1802,9 @@ dispatch_graphics(struct comp_renderer *r,
 					    ((struct comp_swapchain *)proj_layer->sc_array[eye])->vkic.info.height);
 				} else {
 					const struct xrt_layer_projection_view_data *vd = &proj_layer->data.depth.v[eye];
-					COMP_WARN(
+					COMP_DEBUG(
 					    c,
-					    "Unity imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
+					    "OpenXR projection imageRect eye=%u: offset=(%d,%d) extent=(%u,%u) "
 					    "swapchain=(%u,%u)",
 					    eye, vd->sub.rect.offset.w, vd->sub.rect.offset.h, vd->sub.rect.extent.w,
 					    vd->sub.rect.extent.h,
@@ -1828,7 +1828,7 @@ dispatch_graphics(struct comp_renderer *r,
 
 		illixr_tw_update_uniforms(left_pose, right_pose);
 	} else {
-		COMP_WARN(c, "ILLIXR: No projection layer found for pose update");
+		COMP_DEBUG(c, "ILLIXR: No projection layer found for pose update");
 	}
 #endif
 	// The arguments for the dispatch function.
@@ -1887,23 +1887,25 @@ dispatch_graphics(struct comp_renderer *r,
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	if (fast_path && proj_layer != NULL) {
-		// Unity uses a texture array swapchain (both eyes in one VkImage,
+		// Some runtimes/apps use a texture array swapchain (both eyes in one VkImage,
 		// array_index 0=left, 1=right). The mesh shader expects a plain
 		// sampler2D and cannot bind an array image view directly.
 		// Blit each eye's array layer into its per-eye 2D scratch image,
 		// then composite through the identity distortion mesh from there.
 		for (uint32_t eye = 0; eye < 2; eye++) {
-			uint32_t image_index = (proj_layer->data.type == XRT_LAYER_PROJECTION)
-			                           ? proj_layer->data.proj.v[eye].sub.image_index
-			                           : proj_layer->data.depth.v[eye].sub.image_index;
-			uint32_t array_index = (proj_layer->data.type == XRT_LAYER_PROJECTION)
-			                           ? proj_layer->data.proj.v[eye].sub.array_index
-			                           : proj_layer->data.depth.v[eye].sub.array_index;
+			const struct xrt_layer_projection_view_data *vd =
+			    (proj_layer->data.type == XRT_LAYER_PROJECTION)
+			        ? &proj_layer->data.proj.v[eye]
+			        : &proj_layer->data.depth.v[eye];
+			uint32_t image_index = vd->sub.image_index;
+			uint32_t array_index = vd->sub.array_index;
 
 			struct comp_swapchain *comp_sc = (struct comp_swapchain *)proj_layer->sc_array[eye];
 			VkImage src_image = comp_sc->vkic.images[image_index].handle;
-			uint32_t src_w = comp_sc->vkic.info.width;
-			uint32_t src_h = comp_sc->vkic.info.height;
+			int32_t src_x0 = vd->sub.rect.offset.w;
+			int32_t src_y0 = vd->sub.rect.offset.h;
+			int32_t src_x1 = src_x0 + (int32_t)vd->sub.rect.extent.w;
+			int32_t src_y1 = src_y0 + (int32_t)vd->sub.rect.extent.h;
 
 			uint32_t scratch_index = crss->views[eye].index;
 			struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
@@ -1911,7 +1913,7 @@ dispatch_graphics(struct comp_renderer *r,
 			uint32_t dst_w = scratch_view->info.width;
 			uint32_t dst_h = scratch_view->info.height;
 
-			// Unity swapchain: SHADER_READ_ONLY → TRANSFER_SRC (one array layer).
+			// Projection swapchain: SHADER_READ_ONLY -> TRANSFER_SRC (one array layer).
 			VkImageMemoryBarrier barrier = {
 			    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			    .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
@@ -1952,7 +1954,7 @@ dispatch_graphics(struct comp_renderer *r,
 			            .baseArrayLayer = array_index,
 			            .layerCount = 1,
 			        },
-			    .srcOffsets = {{0, 0, 0}, {src_w, src_h, 1}},
+			    .srcOffsets = {{src_x0, src_y0, 0}, {src_x1, src_y1, 1}},
 			    .dstSubresource =
 			        {
 			            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1966,7 +1968,7 @@ dispatch_graphics(struct comp_renderer *r,
 			                   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
 			                   VK_FILTER_LINEAR);
 
-			// Unity swapchain back to SHADER_READ_ONLY.
+			// Projection swapchain back to SHADER_READ_ONLY.
 			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -2095,7 +2097,7 @@ illixr_gfx_dispatch_done:;
 
 				r->illixr_downsampled_created = true;
 			}
-			// Fast path: read directly from the Unity projection layer swapchain image
+			// Fast path: read directly from the app projection layer swapchain image
 			// (in SHADER_READ_ONLY_OPTIMAL after the distortion pass sampled it).
 			// Slow path: read from the scratch image written by the layer squasher
 			// (in COLOR_ATTACHMENT_OPTIMAL).
@@ -2113,14 +2115,15 @@ illixr_gfx_dispatch_done:;
 				VkPipelineStageFlags src_stage_after;
 
 				if (fast_path && proj_layer != NULL) {
-					// Unity swapchain image — already in SHADER_READ_ONLY after
+					// Projection swapchain image: already in SHADER_READ_ONLY after
 					// the distortion pass sampled it.
-					uint32_t image_index;
+					const struct xrt_layer_projection_view_data *vd;
 					if (proj_layer->data.type == XRT_LAYER_PROJECTION) {
-						image_index = proj_layer->data.proj.v[eye].sub.image_index;
+						vd = &proj_layer->data.proj.v[eye];
 					} else {
-						image_index = proj_layer->data.depth.v[eye].sub.image_index;
+						vd = &proj_layer->data.depth.v[eye];
 					}
+					uint32_t image_index = vd->sub.image_index;
 					struct comp_swapchain *comp_sc =
 					    (struct comp_swapchain *)proj_layer->sc_array[eye];
 					src_image = comp_sc->vkic.images[image_index].handle;
@@ -2156,6 +2159,21 @@ illixr_gfx_dispatch_done:;
 				                                      ? proj_layer->data.proj.v[eye].sub.array_index
 				                                      : proj_layer->data.depth.v[eye].sub.array_index)
 				                               : 0;
+
+				int32_t src_x0 = 0;
+				int32_t src_y0 = 0;
+				int32_t src_x1 = (int32_t)src_width;
+				int32_t src_y1 = (int32_t)src_height;
+				if (fast_path && proj_layer != NULL) {
+					const struct xrt_layer_projection_view_data *vd =
+					    (proj_layer->data.type == XRT_LAYER_PROJECTION)
+					        ? &proj_layer->data.proj.v[eye]
+					        : &proj_layer->data.depth.v[eye];
+					src_x0 = vd->sub.rect.offset.w;
+					src_y0 = vd->sub.rect.offset.h;
+					src_x1 = src_x0 + (int32_t)vd->sub.rect.extent.w;
+					src_y1 = src_y0 + (int32_t)vd->sub.rect.extent.h;
+				}
 
 				// Transition source to TRANSFER_SRC
 				VkImageMemoryBarrier barrier = {
@@ -2199,8 +2217,8 @@ illixr_gfx_dispatch_done:;
 				        },
 				    .srcOffsets =
 				        {
-				            {0, 0, 0},
-				            {src_width, src_height, 1},
+				            {src_x0, src_y0, 0},
+				            {src_x1, src_y1, 1},
 				        },
 				    .dstSubresource =
 				        {
@@ -2694,7 +2712,7 @@ illixr_gfx_dispatch_done:;
 		                }
 
 		                fclose(f);
-		                COMP_INFO(c, "ILLIXR: Saved Unity raw image to %s", filename);
+		                COMP_INFO(c, "ILLIXR: Saved raw projection image to %s", filename);
 		        } else {
 		                COMP_ERROR(c, "ILLIXR: Failed to open %s for writing", filename);
 		        }
@@ -2738,7 +2756,7 @@ illixr_gfx_dispatch_done:;
 				right_pose = proj_layer->data.depth.v[1].pose;
 			}
 		} else {
-			COMP_WARN(c, "ILLIXR: No projection layer found for pose update");
+			COMP_DEBUG(c, "ILLIXR: No projection layer found for pose update");
 		}
 
 		// Release buffer to encoder (now safe - GPU is done)

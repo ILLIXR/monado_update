@@ -1161,13 +1161,18 @@ vk_create_device(struct vk_bundle *vk,
 		return ret;
 	}
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (out_list != NULL) {
+		*out_list = NULL;
+	}
+#endif
+
 	struct u_string_list *device_ext_list = NULL;
 	if (!build_device_extensions(vk, vk->physical_device, required_device_ext_list, optional_device_ext_list,
 	                             &device_ext_list)) {
 		return VK_ERROR_EXTENSION_NOT_PRESENT;
 	}
 
-	*out_list = device_ext_list;
 	/*
 	 * Features
 	 */
@@ -1186,6 +1191,7 @@ vk_create_device(struct vk_bundle *vk,
 	if (!vk->has_EXT_global_priority && //
 	    !vk->has_KHR_global_priority && //
 	    global_priority != VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT) {
+		u_string_list_destroy(&device_ext_list);
 		return VK_ERROR_NOT_PERMITTED_EXT;
 	}
 
@@ -1196,6 +1202,7 @@ vk_create_device(struct vk_bundle *vk,
 	}
 
 	if (ret != VK_SUCCESS) {
+		u_string_list_destroy(&device_ext_list);
 		return ret;
 	}
 
@@ -1325,15 +1332,28 @@ vk_create_device(struct vk_bundle *vk,
 
 	ret = vk->vkCreateDevice(vk->physical_device, &device_create_info, NULL, &vk->device);
 
+#ifndef USE_MONADO_ILLIXR_DRIVER
 	u_string_list_destroy(&device_ext_list);
+#endif
 
 	if (ret != VK_SUCCESS) {
+#ifdef USE_MONADO_ILLIXR_DRIVER
+		u_string_list_destroy(&device_ext_list);
+#endif
 		VK_DEBUG(vk, "vkCreateDevice: %s (%d)", vk_result_string(ret), ret);
 		if (ret == VK_ERROR_NOT_PERMITTED_EXT) {
 			VK_DEBUG(vk, "Is CAP_SYS_NICE set? Try: sudo setcap cap_sys_nice+ep monado-service");
 		}
 		return ret;
 	}
+
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (out_list != NULL) {
+		*out_list = device_ext_list;
+	} else {
+		u_string_list_destroy(&device_ext_list);
+	}
+#endif
 
 	// Fill in the device features we are interested in.
 	fill_in_device_features(vk);
@@ -1362,6 +1382,11 @@ vk_create_device(struct vk_bundle *vk,
 err_destroy:
 	vk->vkDestroyDevice(vk->device, NULL);
 	vk->device = NULL;
+#ifdef USE_MONADO_ILLIXR_DRIVER
+	if (out_list != NULL) {
+		u_string_list_destroy(out_list);
+	}
+#endif
 
 	return ret;
 }
