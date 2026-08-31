@@ -412,6 +412,11 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 	endif()
 	list(APPEND ENABLED_HEADSET_DRIVERS illixr)
 	target_compile_definitions(drv_illixr PRIVATE BUILDING_MONADO_ILLIXR_DRIVER ENABLE_MONADO)
+
+	if(WIN32 OR MSVC)
+		target_compile_definitions(drv_illixr PRIVATE BUILDING_LIBRARY)
+	endif()
+
 endif()
 
 add_library(drv_multi STATIC multi_wrapper/multi.c multi_wrapper/multi.h)
