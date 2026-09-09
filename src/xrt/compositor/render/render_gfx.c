@@ -514,6 +514,7 @@ create_layer_pipeline(struct vk_bundle *vk,
 struct mesh_params
 {
 	uint32_t do_timewarp;
+    VkBool32 encode_srgb;
 };
 
 XRT_CHECK_RESULT static VkResult
@@ -641,9 +642,19 @@ create_mesh_pipeline(struct vk_bundle *vk,
 	VkSpecializationMapEntry vert_entries[] = {
 	    ENTRY(0, do_timewarp),
 	};
+    VkSpecializationMapEntry frag_entries[] = {
+            ENTRY(0, encode_srgb),
+    };
 #undef ENTRY
 
-	VkSpecializationInfo vert_specialization_info = {
+    VkSpecializationInfo frag_specialization_info = {
+            .mapEntryCount = ARRAY_SIZE(frag_entries),
+            .pMapEntries = frag_entries,
+            .dataSize = sizeof(*params),
+            .pData = params,
+    };
+
+    VkSpecializationInfo vert_specialization_info = {
 	    .mapEntryCount = ARRAY_SIZE(vert_entries),
 	    .pMapEntries = vert_entries,
 	    .dataSize = sizeof(*params),
@@ -662,6 +673,7 @@ create_mesh_pipeline(struct vk_bundle *vk,
 	        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 	        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
 	        .module = mesh_frag,
+            .pSpecializationInfo = &frag_specialization_info,
 	        .pName = "main",
 	    },
 	};
@@ -725,8 +737,16 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	VK_CHK_WITH_RET(ret, "create_implicit_render_pass", false);
 	VK_NAME_RENDER_PASS(vk, rgrp->render_pass, "render_gfx_render_pass render pass");
 
-	struct mesh_params simple_params = {
+    // The ILLIXR direct-display fallback has no hardware sRGB encoding.
+    // Encode only at presentation; scratch attachments must stay linear
+    // in the shader (their sRGB views perform the conversion on write).
+    VkBool32 encode_srgb = final_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR &&
+                           format == VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+
+
+    struct mesh_params simple_params = {
 	    .do_timewarp = false,
+        .encode_srgb = encode_srgb,
 	};
 
 	ret = create_mesh_pipeline(    //
@@ -746,6 +766,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 
 	struct mesh_params timewarp_params = {
 	    .do_timewarp = true,
+        .encode_srgb = encode_srgb,
 	};
 
 	ret = create_mesh_pipeline(         //

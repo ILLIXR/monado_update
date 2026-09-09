@@ -8,6 +8,11 @@
 // Author: Pete Black <pete.black@collabora.com>
 
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "srgb.inc.glsl"
+
+layout(constant_id = 0) const bool encode_srgb = false;
 
 
 layout (binding = 0) uniform sampler2D tex_sampler;
@@ -24,5 +29,9 @@ void main()
 	float g = texture(tex_sampler, in_guv).y;
 	float b = texture(tex_sampler, in_buv).z;
 
-	out_color = vec4(r, g, b, 1.0);
+	vec3 color = vec3(r, g, b);
+	if (encode_srgb) {
+		color = from_linear_to_srgb(color);
+	}
+	out_color = vec4(color, 1.0);
 }

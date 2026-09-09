@@ -1990,7 +1990,11 @@ dispatch_graphics(struct comp_renderer *r,
 			                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
 			                         &barrier);
 
-			crss->views[eye].used = true;
+            // Blitting to the UNORM scratch VkImage stores linear RGB (sRGB
+            // sources are decoded by the blit). Sample without a second sRGB
+            // decode; the regular layer-squash path still uses its sRGB view.
+            data.views[eye].srgb_view = scratch_image->unorm_view;
+            crss->views[eye].used = true;
 		}
 
 		// Composite from the scratch images through the identity distortion
