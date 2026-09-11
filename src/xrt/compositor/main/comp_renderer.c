@@ -1427,7 +1427,7 @@ create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, 
 		VkImageCreateInfo image_info = {
 		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		    .imageType = VK_IMAGE_TYPE_2D,
-		    .format = VK_FORMAT_R8G8B8A8_UNORM,
+		    .format = VK_FORMAT_R8G8B8A8_SRGB,
 		    .extent = {width, height, 1},
 		    .mipLevels = 1,
 		    .arrayLayers = 1,
@@ -1508,7 +1508,7 @@ create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, 
 		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		    .image = r->illixr_color_downsampled[i].image,
 		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
-		    .format = VK_FORMAT_R8G8B8A8_UNORM,
+		    .format = VK_FORMAT_R8G8B8A8_SRGB,
 		    .subresourceRange = {
 		        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 		        .baseMipLevel = 0,
@@ -1990,11 +1990,17 @@ dispatch_graphics(struct comp_renderer *r,
 			                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
 			                         &barrier);
 
-            // Blitting to the UNORM scratch VkImage stores linear RGB (sRGB
-            // sources are decoded by the blit). Sample without a second sRGB
-            // decode; the regular layer-squash path still uses its sRGB view.
-            data.views[eye].srgb_view = scratch_image->unorm_view;
-            crss->views[eye].used = true;
+			// Blitting to the UNORM scratch VkImage stores linear RGB (sRGB
+			// sources are decoded by the blit). Sample without a second sRGB
+			// decode; the regular layer-squash path still uses its sRGB view.
+			// NOTE(ILLIXR): this is the known gamma bug -- the blit decodes
+			// sRGB->linear on read but nothing re-encodes back to gamma on
+			// write, so the frame comes out too dark downstream. A raw
+			// vkCmdCopyImage was tried as a fix and reverted; see the note
+			// above the blit call. Still needs a proper resize-capable,
+			// gamma-correct fix.
+			data.views[eye].srgb_view = scratch_image->unorm_view;
+			crss->views[eye].used = true;
 		}
 
 		// Composite from the scratch images through the identity distortion
@@ -2211,7 +2217,7 @@ illixr_gfx_dispatch_done:;
 				                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
 				                         &barrier);
 
-				// Blit (downsample) source → downsampled
+				// Blit (downsample) source -> downsampled
 				VkImageBlit blit = {
 				    .srcSubresource =
 				        {
