@@ -266,27 +266,29 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		float fov_right = scale * ILLIXR::server_params::fov_right[eye];
 		float fov_up = scale * ILLIXR::server_params::fov_up[eye];
 		float fov_down = scale * ILLIXR::server_params::fov_down[eye];
-
+#ifdef USING_OPENXR
 		dh->base.hmd->distortion.fov[eye].angle_left = fov_left;
 		dh->base.hmd->distortion.fov[eye].angle_right = fov_right;
 		dh->base.hmd->distortion.fov[eye].angle_up = fov_up;
 		dh->base.hmd->distortion.fov[eye].angle_down = fov_down;
+#endif
 	}
 
 	// Setup variable tracker.
 	u_var_add_root(dh, "ILLIXR", true);
 	u_var_add_pose(dh, &dh->pose, "pose");
 
-	//if (dh->base.hmd->distortion.preferred == XRT_DISTORTION_MODEL_NONE) {
-		// Setup the distortion mesh.
-	//	u_distortion_mesh_set_none(&dh->base);
-	//}
+#ifdef USING_OPENXR
 	dh->base.hmd->distortion.models = XRT_DISTORTION_MODEL_COMPUTE;
 	dh->base.hmd->distortion.preferred = XRT_DISTORTION_MODEL_COMPUTE;
-#ifdef USING_OPENXR
 	dh->base.compute_distortion = illixr_compute_distortion;
-#endif
 	u_distortion_mesh_fill_in_compute(&dh->base);
+#else
+	if (dh->base.hmd->distortion.preferred == XRT_DISTORTION_MODEL_NONE) {
+	// Setup the distortion mesh.
+		u_distortion_mesh_set_none(&dh->base);
+	}
+#endif
 
 	// start ILLIXR runtime
 	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
