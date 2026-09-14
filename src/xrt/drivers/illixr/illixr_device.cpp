@@ -177,6 +177,8 @@ illixr_rt_launch(struct illixr_hmd *dh, const char *path, const char *comp)
 	return 0;
 }
 
+#ifdef USING_OPENXR
+
 static bool
 illixr_compute_distortion(struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *result)
 {
@@ -191,7 +193,7 @@ illixr_compute_distortion(struct xrt_device *xdev, uint32_t view, float u, float
 	result->b.y = v;
 	return true;
 }
-
+#endif
 extern "C" struct xrt_device *
 illixr_hmd_create(const char *path_in, const char *comp_in)
 {
@@ -281,7 +283,9 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	//}
 	dh->base.hmd->distortion.models = XRT_DISTORTION_MODEL_COMPUTE;
 	dh->base.hmd->distortion.preferred = XRT_DISTORTION_MODEL_COMPUTE;
+#ifdef USING_OPENXR
 	dh->base.compute_distortion = illixr_compute_distortion;
+#endif
 	u_distortion_mesh_fill_in_compute(&dh->base);
 
 	// start ILLIXR runtime
