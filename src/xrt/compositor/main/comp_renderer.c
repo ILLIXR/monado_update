@@ -2257,84 +2257,6 @@ illixr_gfx_dispatch_done:;
 
 				vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
 				                         src_stage_after, 0, 0, NULL, 0, NULL, 1, &barrier);
-				/*
-				// Source: Scratch image for this eye (COLOR)
-				uint32_t scratch_index = crss->views[eye].index;
-				struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
-				struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
-
-				int fb_idx = illixr_buffer_index * 2 + eye;
-
-				// Transition scratch to TRANSFER_SRC
-				VkImageMemoryBarrier barrier = {
-				    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-				    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-				    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-				    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-				    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				    .image = scratch_image->image,
-				    .subresourceRange = {
-				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				        .levelCount = 1,
-				        .layerCount = 1,
-				    },
-				};
-
-				vk->vkCmdPipelineBarrier(render->r->cmd,
-				                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-				                         0, 0, NULL, 0, NULL, 1, &barrier);
-
-				// Transition downsampled to TRANSFER_DST
-				barrier.srcAccessMask = 0;
-				barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				barrier.image = r->illixr_color_downsampled[fb_idx].image;
-
-				vk->vkCmdPipelineBarrier(render->r->cmd,
-				                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-				                         0, 0, NULL, 0, NULL, 1, &barrier);
-
-				// Blit (downsample) scratch → downsampled
-				VkImageBlit blit = {
-				    .srcSubresource = {
-				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				        .layerCount = 1,
-				    },
-				    .srcOffsets = {
-				        {0, 0, 0},
-				        {scratch_view->info.width, scratch_view->info.height, 1},
-				    },
-				    .dstSubresource = {
-				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				        .layerCount = 1,
-				    },
-				    .dstOffsets = {
-				        {0, 0, 0},
-				        {r->illixr_color_downsampled[fb_idx].width,
-				            r->illixr_color_downsampled[fb_idx].height, 1},
-				    },
-				};
-
-				vk->vkCmdBlitImage(render->r->cmd,
-				                   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				                   r->illixr_color_downsampled[fb_idx].image,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-
-				// Transition scratch back
-				barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-				barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-				barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-				barrier.image = scratch_image->image;
-
-				vk->vkCmdPipelineBarrier(render->r->cmd,
-				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-				                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-				                         0, 0, NULL, 0, NULL, 1, &barrier);
-				                         */
 				// Transition downsampled to SHADER_READ (for NVENC)
 				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2675,6 +2597,8 @@ illixr_gfx_dispatch_done:;
 				//           (void *)scratch_image->image,
 				//           (void *)r->illixr_framebuffers[fb_idx].depth_image);
 			}
+            illixr_tw_record_command_buffer(render->r->cmd, rtr->framebuffer, illixr_buffer_index, 1);
+            illixr_tw_record_command_buffer(render->r->cmd, rtr->framebuffer, illixr_buffer_index, 0);
 		}
 	}
 #endif
