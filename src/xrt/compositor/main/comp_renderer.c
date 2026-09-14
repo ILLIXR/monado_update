@@ -554,6 +554,27 @@ renderer_close_renderings_and_fences(struct comp_renderer *r)
 	r->fenced_buffer = -1;
 }
 
+#ifdef USE_MONADO_ILLIXR_DRIVER
+// ILLIXR: forward declarations. Defined further down in this file, but the
+// color-downsampled images they build now need to exist before
+// illixr_initialize_timewarp() is called in renderer_ensure_images_and_renderings(),
+// since that call takes a one-time snapshot of the image handles.
+static void
+create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+#ifdef XRT_OS_WINDOWS
+static void
+create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+static void
+create_illixr_depth_rg_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+static void
+create_illixr_motion_vector_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+static void
+create_depth_to_rg_pipeline(struct comp_renderer *r);
+static void
+create_depth_to_rg_descriptors(struct comp_renderer *r);
+#endif // XRT_OS_WINDOWS
+#endif // USE_MONADO_ILLIXR_DRIVER
+
 /*!
  * @brief Ensure that target images and renderings are created, if possible.
  *
@@ -648,22 +669,93 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 		    .height = r->c->xdev->hmd->screens[0].h_pixels,
 		};
 
-		// Initialize ILLIXR timewarp without framebuffer data
-		// Framebuffers will be accessed later via illixr_get_framebuffer_info()
+		// Create the per-eye source images *before* calling
+		// illixr_initialize_timewarp() below. setup() takes a one-time
+		// snapshot of the image/image_view handles to build its descriptor
+		// sets; anything created after this point is invisible to it. None
+		// of these dimensions depend on data only available at first-frame
+		// time (color uses the HMD's fixed display resolution, depth/motion
+		// vectors use compile-time constants), so it's safe to build them
+		// here instead of lazily in dispatch_graphics().
+		if (!r->illixr_downsampled_created) {
+			uint32_t color_width = r->c->xdev->hmd->views[0].display.w_pixels;
+			uint32_t color_height = r->c->xdev->hmd->views[0].display.h_pixels;
+
+			create_illixr_color_downsampled_images(r, color_width, color_height);
+
+			for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+				r->illixr_framebuffers[i].image = r->illixr_color_downsampled[i].image;
+				r->illixr_framebuffers[i].memory = r->illixr_color_downsampled[i].memory;
+				r->illixr_framebuffers[i].view = r->illixr_color_downsampled[i].view;
+				r->illixr_framebuffers[i].image_size = r->illixr_color_downsampled[i].memory_size;
+				r->illixr_framebuffers[i].image_offset = 0;
+				r->illixr_framebuffers[i].image_extent.width = r->illixr_color_downsampled[i].width;
+				r->illixr_framebuffers[i].image_extent.height = r->illixr_color_downsampled[i].height;
+			}
+
+#ifdef XRT_OS_WINDOWS
+			uint32_t depth_width = MOTION_VECTOR_WIDTH;
+			uint32_t depth_height = MOTION_VECTOR_HEIGHT;
+
+			create_illixr_depth_downsampled_images(r, depth_width, depth_height);
+			create_illixr_depth_rg_images(r, depth_width, depth_height);
+			create_depth_to_rg_pipeline(r);
+			create_depth_to_rg_descriptors(r);
+
+			for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+				r->illixr_framebuffers[i].depth_image = r->illixr_depth_rg[i].image;
+				r->illixr_framebuffers[i].depth_memory = r->illixr_depth_rg[i].memory;
+				r->illixr_framebuffers[i].depth_view = r->illixr_depth_rg[i].view;
+				r->illixr_framebuffers[i].depth_size = r->illixr_depth_rg[i].memory_size;
+				r->illixr_framebuffers[i].depth_offset = 0;
+				r->illixr_framebuffers[i].depth_extent.width = r->illixr_depth_rg[i].width;
+				r->illixr_framebuffers[i].depth_extent.height = r->illixr_depth_rg[i].height;
+			}
+
+			create_illixr_motion_vector_images(r, MOTION_VECTOR_WIDTH, MOTION_VECTOR_HEIGHT);
+			for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+				r->illixr_framebuffers[i].motion_vec_image = r->illixr_motion_vectors[i].image;
+				r->illixr_framebuffers[i].motion_vec_memory = r->illixr_motion_vectors[i].memory;
+				r->illixr_framebuffers[i].motion_vec_view = r->illixr_motion_vectors[i].view;
+				r->illixr_framebuffers[i].motion_vec_size = r->illixr_motion_vectors[i].memory_size;
+				r->illixr_framebuffers[i].motion_vec_offset = 0;
+				r->illixr_framebuffers[i].motion_vec_extent.width = MOTION_VECTOR_WIDTH;
+				r->illixr_framebuffers[i].motion_vec_extent.height = MOTION_VECTOR_HEIGHT;
+			}
+#endif // XRT_OS_WINDOWS
+
+			r->illixr_downsampled_created = true;
+		}
+
+		// Flat per-slot arrays for illixr_initialize_timewarp(), built from the
+		// color images above -- these are what actually end up in buffer_pool's
+		// image_pool and get baked into timewarp's descriptor sets.
+		VkImage tw_images[2 * OFFLOAD_BUFFER_POOL_SIZE];
+		VkImageView tw_image_views[2 * OFFLOAD_BUFFER_POOL_SIZE];
+		VkDeviceMemory tw_device_memory[2 * OFFLOAD_BUFFER_POOL_SIZE];
+		VkDeviceSize tw_sizes[2 * OFFLOAD_BUFFER_POOL_SIZE];
+		VkDeviceSize tw_offsets[2 * OFFLOAD_BUFFER_POOL_SIZE];
+		for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+			tw_images[i] = r->illixr_color_downsampled[i].image;
+			tw_image_views[i] = r->illixr_color_downsampled[i].view;
+			tw_device_memory[i] = r->illixr_color_downsampled[i].memory;
+			tw_sizes[i] = r->illixr_color_downsampled[i].memory_size;
+			tw_offsets[i] = r->illixr_color_downsampled[i].memory_offset;
+		}
+
 		illixr_initialize_timewarp(r->target_render_pass.render_pass,
 		                           0, // subpass
 		                           extent,
-		                           NULL,                    // images - not needed at init
-		                           NULL,                    // image_views - not needed at init
-		                           NULL,                    // device_memory - not needed at init
-		                           NULL,                    // sizes - not needed at init
-		                           NULL,                    // offsets - not needed at init
+		                           tw_images,
+		                           tw_image_views,
+		                           tw_device_memory,
+		                           tw_sizes,
+		                           tw_offsets,
 		                           OFFLOAD_BUFFER_POOL_SIZE,// num_buffers_per_eye
 		                           r->illixr_framebuffers
 		);
 		COMP_INFO(r->c, "ILLIXR timewarp initialized (extent=%ux%u, buffers=%u)", extent.width, extent.height,
 		          OFFLOAD_BUFFER_POOL_SIZE);
-		COMP_INFO(r->c, "Framebuffers will be accessed on-demand via illixr_get_framebuffer_info()");
 	}
 
 #endif
@@ -2025,88 +2117,13 @@ illixr_gfx_dispatch_done:;
 			COMP_WARN(c, "ILLIXR: No buffer available, skipping frame");
 		} else {
 			// COMP_INFO(c, "ILLIXR: Acquired buffer index: %d", illixr_buffer_index);
-			//  Create downsampled images if not already created
-			if (!r->illixr_downsampled_created) {
-				// Target encoding resolution (no scaling)
-				uint32_t target_width = r->c->xdev->hmd->views[0].display.w_pixels;
-				uint32_t target_height = r->c->xdev->hmd->views[0].display.h_pixels;
-
-				// Create color downsampled images
-				create_illixr_color_downsampled_images(r, target_width, target_height);
-
-				// Pre-populate ALL color framebuffer slots immediately after image
-				// creation.  nvenc_import_buffer_pool_images runs once on the first
-				// src_release, which may arrive before every buffer slot has been
-				// rendered into.  Slots whose fb->image is still VK_NULL_HANDLE are
-				// skipped entirely (the continue guard in the import loop), so those
-				// encoder indices stay at -1 and later encode calls warn "not imported".
-				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
-					// COLOR
-					r->illixr_framebuffers[i].image = r->illixr_color_downsampled[i].image;
-					r->illixr_framebuffers[i].memory = r->illixr_color_downsampled[i].memory;
-					r->illixr_framebuffers[i].view = r->illixr_color_downsampled[i].view;
-					r->illixr_framebuffers[i].image_size =
-					    r->illixr_color_downsampled[i].memory_size;
-					r->illixr_framebuffers[i].image_offset = 0;
-					r->illixr_framebuffers[i].image_extent.width =
-					    r->illixr_color_downsampled[i].width;
-					r->illixr_framebuffers[i].image_extent.height =
-					    r->illixr_color_downsampled[i].height;
-				}
-
-				// Depth downsampling, its RG re-encode, and motion vectors are all
-				// only produced alongside the Windows-only Unity motion vector
-				// feature; with no motion vectors there is nothing to downsample
-				// depth for.
-#ifdef XRT_OS_WINDOWS
-				uint32_t depth_width = MOTION_VECTOR_WIDTH;
-				uint32_t depth_height = MOTION_VECTOR_HEIGHT;
-
-				// Create depth downsampled images
-				create_illixr_depth_downsampled_images(r, depth_width, depth_height);
-
-				// Create RG depth images
-				create_illixr_depth_rg_images(r, depth_width, depth_height);
-
-				// Create depth-to-RG pipeline and descriptors
-				create_depth_to_rg_pipeline(r);
-				create_depth_to_rg_descriptors(r);
-
-				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
-					// DEPTH (RG image, always valid when depth is enabled)
-					r->illixr_framebuffers[i].depth_image = r->illixr_depth_rg[i].image;
-					r->illixr_framebuffers[i].depth_memory = r->illixr_depth_rg[i].memory;
-					r->illixr_framebuffers[i].depth_view = r->illixr_depth_rg[i].view;
-					r->illixr_framebuffers[i].depth_size = r->illixr_depth_rg[i].memory_size;
-					r->illixr_framebuffers[i].depth_offset = 0;
-					r->illixr_framebuffers[i].depth_extent.width = r->illixr_depth_rg[i].width;
-					r->illixr_framebuffers[i].depth_extent.height = r->illixr_depth_rg[i].height;
-				}
-
-				// Create motion vector images eagerly so that all buffer-pool
-				// slots have valid VkImage handles before the server calls
-				// nvenc_import_buffer_pool_images() on the first src_release.
-				// Previously these were lazy-created on the first blit, which
-				// meant the one-shot import ran before any sentinel quad had
-				// been submitted and saw VK_NULL_HANDLE for every slot.
-				// MOTION_VECTOR_WIDTH/HEIGHT are compile-time constants so we
-				// do not need Unity's swapchain dimensions here.
-				create_illixr_motion_vector_images(r, MOTION_VECTOR_WIDTH, MOTION_VECTOR_HEIGHT);
-				for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
-					r->illixr_framebuffers[i].motion_vec_image = r->illixr_motion_vectors[i].image;
-					r->illixr_framebuffers[i].motion_vec_memory =
-					    r->illixr_motion_vectors[i].memory;
-					r->illixr_framebuffers[i].motion_vec_view = r->illixr_motion_vectors[i].view;
-					r->illixr_framebuffers[i].motion_vec_size =
-					    r->illixr_motion_vectors[i].memory_size;
-					r->illixr_framebuffers[i].motion_vec_offset = 0;
-					r->illixr_framebuffers[i].motion_vec_extent.width = MOTION_VECTOR_WIDTH;
-					r->illixr_framebuffers[i].motion_vec_extent.height = MOTION_VECTOR_HEIGHT;
-				}
-#endif // XRT_OS_WINDOWS
-
-				r->illixr_downsampled_created = true;
-			}
+			// Color/depth/motion-vector images are now created up front in
+			// renderer_ensure_images_and_renderings(), before
+			// illixr_initialize_timewarp() takes its one-time snapshot of the
+			// image handles for timewarp's descriptor sets. r->illixr_downsampled_created
+			// is guaranteed true by the time we get here; only the per-frame
+			// content refresh (the blits below) happens on this path now.
+			assert(r->illixr_downsampled_created);
 			// Fast path: read directly from the app projection layer swapchain image
 			// (in SHADER_READ_ONLY_OPTIMAL after the distortion pass sampled it).
 			// Slow path: read from the scratch image written by the layer squasher
@@ -2257,6 +2274,84 @@ illixr_gfx_dispatch_done:;
 
 				vk->vkCmdPipelineBarrier(render->r->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
 				                         src_stage_after, 0, 0, NULL, 0, NULL, 1, &barrier);
+				/*
+				// Source: Scratch image for this eye (COLOR)
+				uint32_t scratch_index = crss->views[eye].index;
+				struct comp_scratch_single_images *scratch_view = &c->scratch.views[eye];
+				struct render_scratch_color_image *scratch_image = &scratch_view->images[scratch_index];
+
+				int fb_idx = illixr_buffer_index * 2 + eye;
+
+				// Transition scratch to TRANSFER_SRC
+				VkImageMemoryBarrier barrier = {
+				    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+				    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				    .image = scratch_image->image,
+				    .subresourceRange = {
+				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				        .levelCount = 1,
+				        .layerCount = 1,
+				    },
+				};
+
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+				                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+				// Transition downsampled to TRANSFER_DST
+				barrier.srcAccessMask = 0;
+				barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.image = r->illixr_color_downsampled[fb_idx].image;
+
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+				                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+				// Blit (downsample) scratch → downsampled
+				VkImageBlit blit = {
+				    .srcSubresource = {
+				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				        .layerCount = 1,
+				    },
+				    .srcOffsets = {
+				        {0, 0, 0},
+				        {scratch_view->info.width, scratch_view->info.height, 1},
+				    },
+				    .dstSubresource = {
+				        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				        .layerCount = 1,
+				    },
+				    .dstOffsets = {
+				        {0, 0, 0},
+				        {r->illixr_color_downsampled[fb_idx].width,
+				            r->illixr_color_downsampled[fb_idx].height, 1},
+				    },
+				};
+
+				vk->vkCmdBlitImage(render->r->cmd,
+				                   scratch_image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				                   r->illixr_color_downsampled[fb_idx].image,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+				// Transition scratch back
+				barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+				barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+				barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+				barrier.image = scratch_image->image;
+
+				vk->vkCmdPipelineBarrier(render->r->cmd,
+				                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				                         0, 0, NULL, 0, NULL, 1, &barrier);
+				                         */
 				// Transition downsampled to SHADER_READ (for NVENC)
 				barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 				barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2497,9 +2592,9 @@ illixr_gfx_dispatch_done:;
 							uint32_t mv_w = mv_comp_sc->vkic.info.width / 2; // per-eye half
 							uint32_t mv_h = mv_comp_sc->vkic.info.height;
 
-							// Motion vector images are created eagerly in the
-							// illixr_downsampled_created block above; no lazy-create
-							// needed.
+							// Motion vector images are created eagerly in
+							// renderer_ensure_images_and_renderings(); no lazy-create
+							// needed here.
 
 							// Transition Unity's swapchain image → TRANSFER_SRC
 							VkImageMemoryBarrier mv_barrier = {
@@ -2597,9 +2692,14 @@ illixr_gfx_dispatch_done:;
 				//           (void *)scratch_image->image,
 				//           (void *)r->illixr_framebuffers[fb_idx].depth_image);
 			}
-            illixr_tw_record_command_buffer(render->r->cmd, rtr->framebuffer, illixr_buffer_index, 1);
-            illixr_tw_record_command_buffer(render->r->cmd, rtr->framebuffer, illixr_buffer_index, 0);
 		}
+
+		// ILLIXR: run our own timewarp pass on top of what Monado just wrote
+		// to rtr->framebuffer, reading the source content we just refreshed
+		// above for illixr_buffer_index. Must be recorded before
+		// render_gfx_end() below closes this command buffer.
+		illixr_tw_record_command_buffer(render->r->cmd, rtr->framebuffer, illixr_buffer_index, 1);
+		illixr_tw_record_command_buffer(render->r->cmd, rtr->framebuffer, illixr_buffer_index, 0);
 	}
 #endif
 

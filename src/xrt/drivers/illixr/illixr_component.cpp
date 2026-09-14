@@ -384,9 +384,29 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
 {
 	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
 
-	// Create empty buffer pool - images will be imported later
+	// Populate the buffer pool from the caller's image/image_view arrays.
+	// timewarp_vk::create_descriptor_sets() reads image_pool[i][eye].image_view
+	// exactly once, synchronously inside setup() below -- there is no later
+	// import step, so these handles must already be valid here. Monado
+	// (comp_renderer.c) owns creation and destruction of the underlying
+	// VkImages; we only borrow the handles for descriptor set binding, so
+	// the other vk_image fields (VMA allocation, fd) are left default --
+	// timewarp_vk never reads them.
 	std::vector<std::array<vulkan::vk_image, 2>> image_pool(num_buffers_per_eye);
 	std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool(num_buffers_per_eye);
+
+	for (uint32_t i = 0; i < num_buffers_per_eye; i++) {
+		for (uint32_t eye = 0; eye < 2; eye++) {
+			uint32_t idx = i * 2 + eye;
+			image_pool[i][eye].image      = image[idx];
+			image_pool[i][eye].image_view = image_view[idx];
+		}
+	}
+	// Not used by timewarp_vk's descriptor sets -- images are Monado-owned,
+	// so we don't need their backing memory to bind or destroy anything here.
+	(void) device_memory;
+	(void) size;
+	(void) offset;
 
 	auto buffer_pool = std::make_shared<vulkan::buffer_pool<BUFFER_TYPE>>(image_pool, depth_image_pool);
 	illixr_plugin_obj->buffer_pool = buffer_pool;
