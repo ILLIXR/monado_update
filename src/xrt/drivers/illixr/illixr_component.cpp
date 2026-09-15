@@ -382,43 +382,50 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
                            uint32_t num_buffers_per_eye,
                            struct illixr_framebuffer *framebuffer_array)
 {
-	assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
+    assert(illixr_plugin_obj && "illixr_plugin_obj must be initialized first.");
 
-	// Populate the buffer pool from the caller's image/image_view arrays.
-	// timewarp_vk::create_descriptor_sets() reads image_pool[i][eye].image_view
-	// exactly once, synchronously inside setup() below -- there is no later
-	// import step, so these handles must already be valid here. Monado
-	// (comp_renderer.c) owns creation and destruction of the underlying
-	// VkImages; we only borrow the handles for descriptor set binding, so
-	// the other vk_image fields (VMA allocation, fd) are left default --
-	// timewarp_vk never reads them.
-	std::vector<std::array<vulkan::vk_image, 2>> image_pool(num_buffers_per_eye);
-	std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool(num_buffers_per_eye);
+    // Populate the buffer pool from the caller's image/image_view arrays
+    // (color) and framebuffer_array (depth). timewarp_vk::create_descriptor_sets()
+    // reads image_pool[i][eye].image_view exactly once, synchronously inside
+    // setup() below -- there is no later import step, so these handles must
+    // already be valid here. Monado (comp_renderer.c) owns creation and
+    // destruction of the underlying VkImages; we only borrow the handles for
+    // descriptor set binding, so the other vk_image fields (VMA allocation,
+    // fd) are left default -- timewarp_vk never reads them.
+    std::vector<std::array<vulkan::vk_image, 2>> image_pool(num_buffers_per_eye);
+    std::vector<std::array<vulkan::vk_image, 2>> depth_image_pool(num_buffers_per_eye);
 
-	for (uint32_t i = 0; i < num_buffers_per_eye; i++) {
-		for (uint32_t eye = 0; eye < 2; eye++) {
-			uint32_t idx = i * 2 + eye;
-			image_pool[i][eye].image      = image[idx];
-			image_pool[i][eye].image_view = image_view[idx];
-		}
-	}
-	// Not used by timewarp_vk's descriptor sets -- images are Monado-owned,
-	// so we don't need their backing memory to bind or destroy anything here.
-	(void) device_memory;
-	(void) size;
-	(void) offset;
+    for (uint32_t i = 0; i < num_buffers_per_eye; i++) {
+        for (uint32_t eye = 0; eye < 2; eye++) {
+            uint32_t idx = i * 2 + eye;
+            image_pool[i][eye].image      = image[idx];
+            image_pool[i][eye].image_view = image_view[idx];
 
-	auto buffer_pool = std::make_shared<vulkan::buffer_pool<BUFFER_TYPE>>(image_pool, depth_image_pool);
-	illixr_plugin_obj->buffer_pool = buffer_pool;
+            // Depth isn't passed through its own array -- framebuffer_array
+            // already carries a depth_image/depth_view per slot (populated
+            // alongside the color image on the Monado side), indexed the
+            // same way as image/image_view above.
+            depth_image_pool[i][eye].image      = framebuffer_array[idx].depth_image;
+            depth_image_pool[i][eye].image_view = framebuffer_array[idx].depth_view;
+        }
+    }
+    // Not used by timewarp_vk's descriptor sets -- images are Monado-owned,
+    // so we don't need their backing memory to bind or destroy anything here.
+    (void) device_memory;
+    (void) size;
+    (void) offset;
 
-	// Pass EVERYTHING through setup() - the only communication channel to the plugin
-	illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, buffer_pool, true,
-	                                      framebuffer_array, // Plugin stores this pointer
-	                                      extent             // Plugin uses this for encoder dimensions
-	);
+    auto buffer_pool = std::make_shared<vulkan::buffer_pool<BUFFER_TYPE>>(image_pool, depth_image_pool);
+    illixr_plugin_obj->buffer_pool = buffer_pool;
 
-	fprintf(stderr, "[ILLIXR] Timewarp setup complete - extent=%ux%u, fb_array=%p\n", extent.width, extent.height,
-	        (void *)framebuffer_array);
+    // Pass EVERYTHING through setup() - the only communication channel to the plugin
+    illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, buffer_pool, true,
+                                          framebuffer_array, // Plugin stores this pointer
+                                          extent             // Plugin uses this for encoder dimensions
+    );
+
+    fprintf(stderr, "[ILLIXR] Timewarp setup complete - extent=%ux%u, fb_array=%p\n", extent.width, extent.height,
+            (void *)framebuffer_array);
 }
 
 extern "C" int8_t

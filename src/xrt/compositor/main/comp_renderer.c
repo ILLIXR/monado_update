@@ -194,7 +194,20 @@ struct comp_renderer
 		uint32_t height;
 	} illixr_color_downsampled[2 * OFFLOAD_BUFFER_POOL_SIZE];
 
-	// Depth downsampling, its RG re-encode, and motion vectors are all only
+	// Full-size depth images (6 total: 3 buffers × 2 eyes). Populated on every
+	// platform; superseded by illixr_depth_rg below only on Windows builds
+    // where motion vectors are in use (see renderer_ensure_images_and_renderings).
+    struct {
+        VkImage image;
+        VkDeviceMemory memory;
+        VkImageView view;
+        VkDeviceSize memory_size;
+        VkDeviceSize memory_offset;
+        uint32_t width;
+        uint32_t height;
+    } illixr_depth_full[2 * OFFLOAD_BUFFER_POOL_SIZE];
+
+    // Depth downsampling, its RG re-encode, and motion vectors are all only
 	// produced alongside the Windows-only Unity motion vector feature; with
 	// no motion vectors there is nothing to downsample depth for.
 #ifdef XRT_OS_WINDOWS
@@ -561,6 +574,8 @@ renderer_close_renderings_and_fences(struct comp_renderer *r)
 // since that call takes a one-time snapshot of the image handles.
 static void
 create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+static void
+create_illixr_depth_full_images(struct comp_renderer *r, uint32_t width, uint32_t height);
 #ifdef XRT_OS_WINDOWS
 static void
 create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height);
@@ -693,6 +708,22 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 				r->illixr_framebuffers[i].image_extent.height = r->illixr_color_downsampled[i].height;
 			}
 
+            // Full-size depth: populated on every platform. On Windows builds
+            // where motion vectors are in use, the block below overwrites
+            // these depth_* fields with the downsampled/RG-encoded depth
+            // instead, since that's the resolution the motion-vector pipeline
+            // actually keeps refreshed per-frame.
+            create_illixr_depth_full_images(r, color_width, color_height);
+            for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+                r->illixr_framebuffers[i].depth_image = r->illixr_depth_full[i].image;
+                r->illixr_framebuffers[i].depth_memory = r->illixr_depth_full[i].memory;
+                r->illixr_framebuffers[i].depth_view = r->illixr_depth_full[i].view;
+                r->illixr_framebuffers[i].depth_size = r->illixr_depth_full[i].memory_size;
+                r->illixr_framebuffers[i].depth_offset = 0;
+                r->illixr_framebuffers[i].depth_extent.width = r->illixr_depth_full[i].width;
+                r->illixr_framebuffers[i].depth_extent.height = r->illixr_depth_full[i].height;
+            }
+
 #ifdef XRT_OS_WINDOWS
 			uint32_t depth_width = MOTION_VECTOR_WIDTH;
 			uint32_t depth_height = MOTION_VECTOR_HEIGHT;
@@ -702,6 +733,9 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 			create_depth_to_rg_pipeline(r);
 			create_depth_to_rg_descriptors(r);
 
+            // Overrides the full-size depth populated above: once motion
+            // vectors are active, the RG-encoded, downsampled depth is what's
+            // actually kept current frame-to-frame.
 			for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
 				r->illixr_framebuffers[i].depth_image = r->illixr_depth_rg[i].image;
 				r->illixr_framebuffers[i].depth_memory = r->illixr_depth_rg[i].memory;
@@ -1623,7 +1657,112 @@ create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, 
 		r->illixr_color_downsampled[i].height = height;
 	}
 
-	COMP_INFO(c, "Created %d color downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+    COMP_INFO(c, "Created %d color downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+}
+
+// Full-size depth images, cross-platform. Unlike the Windows-only depth
+// pipeline below (which downsamples to MOTION_VECTOR_WIDTH/HEIGHT for the
+// RG re-encode consumed alongside motion vectors), this is the plain
+// full-resolution depth buffer used for illixr_framebuffers' depth_* fields
+// whenever the Windows motion-vector path isn't active. Modeled directly on
+// create_illixr_depth_downsampled_images() below, minus the Windows gate.
+static void
+create_illixr_depth_full_images(struct comp_renderer *r, uint32_t width, uint32_t height)
+{
+    struct comp_compositor *c = r->c;
+    struct vk_bundle *vk = &c->base.vk;
+
+    COMP_INFO(c, "Creating ILLIXR full-size depth images: %ux%u", width, height);
+
+    for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+        // Create depth image
+        VkImageCreateInfo image_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D16_UNORM,  // 16-bit depth
+            .extent = {width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                     VK_IMAGE_USAGE_SAMPLED_BIT,  // For compute shader input
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL,
+                                         &r->illixr_depth_full[i].image);
+        if (ret != VK_SUCCESS) {
+            COMP_ERROR(c, "Failed to create full-size depth image %u: %d", i, ret);
+            return;
+        }
+
+        // Get memory requirements
+        VkMemoryRequirements mem_reqs;
+        vk->vkGetImageMemoryRequirements(vk->device, r->illixr_depth_full[i].image, &mem_reqs);
+
+        // Find memory type
+        uint32_t memory_type_index;
+        bool found = vk_get_memory_type(vk, mem_reqs.memoryTypeBits,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                        &memory_type_index);
+        if (!found) {
+            COMP_ERROR(c, "Failed to find suitable memory type for full-size depth");
+            return;
+        }
+
+        // Allocate memory
+        VkMemoryAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = mem_reqs.size,
+            .memoryTypeIndex = memory_type_index,
+        };
+
+        ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL,
+                                   &r->illixr_depth_full[i].memory);
+        if (ret != VK_SUCCESS) {
+            COMP_ERROR(c, "Failed to allocate full-size depth memory %u: %d", i, ret);
+            return;
+        }
+
+        // Bind memory
+        ret = vk->vkBindImageMemory(vk->device, r->illixr_depth_full[i].image,
+                                    r->illixr_depth_full[i].memory, 0);
+        if (ret != VK_SUCCESS) {
+            COMP_ERROR(c, "Failed to bind full-size depth memory %u: %d", i, ret);
+            return;
+        }
+
+        // Create image view
+        VkImageViewCreateInfo view_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = r->illixr_depth_full[i].image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_D16_UNORM,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+
+        ret = vk->vkCreateImageView(vk->device, &view_info, NULL,
+                                    &r->illixr_depth_full[i].view);
+        if (ret != VK_SUCCESS) {
+            COMP_ERROR(c, "Failed to create full-size depth view %u: %d", i, ret);
+            return;
+        }
+
+        // Store size info
+        r->illixr_depth_full[i].memory_size = mem_reqs.size;
+        r->illixr_depth_full[i].width = width;
+        r->illixr_depth_full[i].height = height;
+    }
+
+    COMP_INFO(c, "Created %d full-size depth images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 
 #ifdef XRT_OS_WINDOWS
