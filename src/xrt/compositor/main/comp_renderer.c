@@ -1669,100 +1669,100 @@ create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, 
 static void
 create_illixr_depth_full_images(struct comp_renderer *r, uint32_t width, uint32_t height)
 {
-    struct comp_compositor *c = r->c;
-    struct vk_bundle *vk = &c->base.vk;
+	struct comp_compositor *c = r->c;
+	struct vk_bundle *vk = &c->base.vk;
 
-    COMP_INFO(c, "Creating ILLIXR full-size depth images: %ux%u", width, height);
+	COMP_INFO(c, "Creating ILLIXR full-size depth images: %ux%u", width, height);
 
-    for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
-        // Create depth image
-        VkImageCreateInfo image_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = VK_FORMAT_D16_UNORM,  // 16-bit depth
-            .extent = {width, height, 1},
-            .mipLevels = 1,
-            .arrayLayers = 1,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                     VK_IMAGE_USAGE_SAMPLED_BIT,  // For compute shader input
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        };
+	for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
+		// Create depth image
+		VkImageCreateInfo image_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = VK_FORMAT_D16_UNORM,  // 16-bit depth
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = VK_SAMPLE_COUNT_1_BIT,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+		             VK_IMAGE_USAGE_SAMPLED_BIT,  // For compute shader input
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
 
-        VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL,
-                                         &r->illixr_depth_full[i].image);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to create full-size depth image %u: %d", i, ret);
-            return;
-        }
+		VkResult ret = vk->vkCreateImage(vk->device, &image_info, NULL,
+		                                 &r->illixr_depth_full[i].image);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create full-size depth image %u: %d", i, ret);
+			return;
+		}
 
-        // Get memory requirements
-        VkMemoryRequirements mem_reqs;
-        vk->vkGetImageMemoryRequirements(vk->device, r->illixr_depth_full[i].image, &mem_reqs);
+		// Get memory requirements
+		VkMemoryRequirements mem_reqs;
+		vk->vkGetImageMemoryRequirements(vk->device, r->illixr_depth_full[i].image, &mem_reqs);
 
-        // Find memory type
-        uint32_t memory_type_index;
-        bool found = vk_get_memory_type(vk, mem_reqs.memoryTypeBits,
-                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                        &memory_type_index);
-        if (!found) {
-            COMP_ERROR(c, "Failed to find suitable memory type for full-size depth");
-            return;
-        }
+		// Find memory type
+		uint32_t memory_type_index;
+		bool found = vk_get_memory_type(vk, mem_reqs.memoryTypeBits,
+		                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		                                &memory_type_index);
+		if (!found) {
+			COMP_ERROR(c, "Failed to find suitable memory type for full-size depth");
+			return;
+		}
 
-        // Allocate memory
-        VkMemoryAllocateInfo alloc_info = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            .allocationSize = mem_reqs.size,
-            .memoryTypeIndex = memory_type_index,
-        };
+		// Allocate memory
+		VkMemoryAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		    .allocationSize = mem_reqs.size,
+		    .memoryTypeIndex = memory_type_index,
+		};
 
-        ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL,
-                                   &r->illixr_depth_full[i].memory);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to allocate full-size depth memory %u: %d", i, ret);
-            return;
-        }
+		ret = vk->vkAllocateMemory(vk->device, &alloc_info, NULL,
+		                           &r->illixr_depth_full[i].memory);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to allocate full-size depth memory %u: %d", i, ret);
+			return;
+		}
 
-        // Bind memory
-        ret = vk->vkBindImageMemory(vk->device, r->illixr_depth_full[i].image,
-                                    r->illixr_depth_full[i].memory, 0);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to bind full-size depth memory %u: %d", i, ret);
-            return;
-        }
+		// Bind memory
+		ret = vk->vkBindImageMemory(vk->device, r->illixr_depth_full[i].image,
+		                            r->illixr_depth_full[i].memory, 0);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to bind full-size depth memory %u: %d", i, ret);
+			return;
+		}
 
-        // Create image view
-        VkImageViewCreateInfo view_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = r->illixr_depth_full[i].image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = VK_FORMAT_D16_UNORM,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
+		// Create image view
+		VkImageViewCreateInfo view_info = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		    .image = r->illixr_depth_full[i].image,
+		    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+		    .format = VK_FORMAT_D16_UNORM,
+		    .subresourceRange = {
+		        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+		        .baseMipLevel = 0,
+		        .levelCount = 1,
+		        .baseArrayLayer = 0,
+		        .layerCount = 1,
+		    },
+		};
 
-        ret = vk->vkCreateImageView(vk->device, &view_info, NULL,
-                                    &r->illixr_depth_full[i].view);
-        if (ret != VK_SUCCESS) {
-            COMP_ERROR(c, "Failed to create full-size depth view %u: %d", i, ret);
-            return;
-        }
+		ret = vk->vkCreateImageView(vk->device, &view_info, NULL,
+		                            &r->illixr_depth_full[i].view);
+		if (ret != VK_SUCCESS) {
+			COMP_ERROR(c, "Failed to create full-size depth view %u: %d", i, ret);
+			return;
+		}
 
-        // Store size info
-        r->illixr_depth_full[i].memory_size = mem_reqs.size;
-        r->illixr_depth_full[i].width = width;
-        r->illixr_depth_full[i].height = height;
-    }
+		// Store size info
+		r->illixr_depth_full[i].memory_size = mem_reqs.size;
+		r->illixr_depth_full[i].width = width;
+		r->illixr_depth_full[i].height = height;
+	}
 
-    COMP_INFO(c, "Created %d full-size depth images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
+	COMP_INFO(c, "Created %d full-size depth images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 
 #ifdef XRT_OS_WINDOWS
@@ -2698,17 +2698,134 @@ illixr_gfx_dispatch_done:;
 					}
 				}
 #else
-				// No motion vectors on this platform, so no depth downsampling
-				// either; always report no depth data.
-				r->illixr_framebuffers[fb_idx].depth_image = VK_NULL_HANDLE;
-				r->illixr_framebuffers[fb_idx].depth_memory = VK_NULL_HANDLE;
-				r->illixr_framebuffers[fb_idx].depth_view = VK_NULL_HANDLE;
-				r->illixr_framebuffers[fb_idx].depth_size = 0;
-				r->illixr_framebuffers[fb_idx].depth_offset = 0;
-				r->illixr_framebuffers[fb_idx].depth_extent.width = 0;
-				r->illixr_framebuffers[fb_idx].depth_extent.height = 0;
-				r->illixr_framebuffers[fb_idx].near_z = 0.0f;
-				r->illixr_framebuffers[fb_idx].far_z = 0.0f;
+				// No motion vectors on this platform, so no RG re-encode --
+				// but the app's depth layer (if any) still gets blitted into
+				// illixr_depth_full at native resolution, same source as the
+				// Windows path above (proj_layer->sc_array[2+eye]), just
+				// without the downsample/RG conversion step.
+				if (proj_layer != NULL && proj_layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
+					uint32_t depth_sc_index = 2 + eye;
+					struct xrt_swapchain *depth_swapchain = proj_layer->sc_array[depth_sc_index];
+
+					if (depth_swapchain != NULL) {
+						uint32_t depth_image_index =
+						    proj_layer->data.depth.d[eye].sub.array_index;
+						struct comp_swapchain *comp_sc =
+						    (struct comp_swapchain *)depth_swapchain;
+
+						if (depth_image_index < depth_swapchain->image_count) {
+							VkImage unity_depth_src =
+							    comp_sc->vkic.images[depth_image_index].handle;
+
+							// Transition Unity's depth swapchain image -> TRANSFER_SRC
+							VkImageMemoryBarrier barrier = {
+							    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+							    .srcAccessMask = 0,
+							    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+							    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+							    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+							    .image = unity_depth_src,
+							    .subresourceRange =
+							        {
+							            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+							            .baseMipLevel = 0,
+							            .levelCount = 1,
+							            .baseArrayLayer = 0,
+							            .layerCount = 1,
+							        },
+							};
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &barrier);
+
+							// Transition our full-size depth image -> TRANSFER_DST
+							barrier.srcAccessMask = 0;
+							barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+							barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							barrier.image = r->illixr_depth_full[fb_idx].image;
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+							                         NULL, 0, NULL, 1, &barrier);
+
+							// Blit depth at native resolution -- illixr_depth_full
+							// is sized to match the color images, no downsampling
+							// here.
+							VkImageBlit depth_blit = {
+							    .srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+							    .srcOffsets = {{0, 0, 0},
+							                   {comp_sc->vkic.info.width,
+							                    comp_sc->vkic.info.height, 1}},
+							    .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+							    .dstOffsets = {{0, 0, 0},
+							                   {r->illixr_depth_full[fb_idx].width,
+							                    r->illixr_depth_full[fb_idx].height,
+							                    1}},
+							};
+
+							vk->vkCmdBlitImage(render->r->cmd, unity_depth_src,
+							                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							                   r->illixr_depth_full[fb_idx].image,
+							                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+							                   &depth_blit, VK_FILTER_NEAREST);
+
+							// Transition full-size depth to shader read (for
+							// descriptor binding)
+							barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+							barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+							barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+							barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+							barrier.image = r->illixr_depth_full[fb_idx].image;
+
+							vk->vkCmdPipelineBarrier(render->r->cmd,
+							                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+							                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+							                         0, NULL, 0, NULL, 1, &barrier);
+
+							r->illixr_framebuffers[fb_idx].depth_image =
+							    r->illixr_depth_full[fb_idx].image;
+							r->illixr_framebuffers[fb_idx].depth_memory =
+							    r->illixr_depth_full[fb_idx].memory;
+							r->illixr_framebuffers[fb_idx].depth_view =
+							    r->illixr_depth_full[fb_idx].view;
+							r->illixr_framebuffers[fb_idx].depth_extent.width =
+							    r->illixr_depth_full[fb_idx].width;
+							r->illixr_framebuffers[fb_idx].depth_extent.height =
+							    r->illixr_depth_full[fb_idx].height;
+							r->illixr_framebuffers[fb_idx].depth_size =
+							    r->illixr_depth_full[fb_idx].memory_size;
+							r->illixr_framebuffers[fb_idx].depth_offset = 0;
+
+							r->illixr_framebuffers[fb_idx].near_z =
+							    proj_layer->data.depth.d[eye].near_z;
+							r->illixr_framebuffers[fb_idx].far_z =
+							    proj_layer->data.depth.d[eye].far_z;
+						}
+					}
+				} else {
+					// No depth layer this frame - clear depth fields, same as
+					// the Windows "no depth layer" case above.
+					r->illixr_framebuffers[fb_idx].depth_image = VK_NULL_HANDLE;
+					r->illixr_framebuffers[fb_idx].depth_memory = VK_NULL_HANDLE;
+					r->illixr_framebuffers[fb_idx].depth_view = VK_NULL_HANDLE;
+					r->illixr_framebuffers[fb_idx].depth_size = 0;
+					r->illixr_framebuffers[fb_idx].depth_offset = 0;
+					r->illixr_framebuffers[fb_idx].depth_extent.width = 0;
+					r->illixr_framebuffers[fb_idx].depth_extent.height = 0;
+					r->illixr_framebuffers[fb_idx].near_z = 0.0f;
+					r->illixr_framebuffers[fb_idx].far_z = 0.0f;
+
+					if (eye == 0) { // Only log once
+						COMP_WARN(c, "ILLIXR: No depth layer (type=%d)",
+						          proj_layer ? proj_layer->data.type : -1);
+					}
+				}
 #endif // XRT_OS_WINDOWS
 
 #ifdef XRT_OS_WINDOWS
