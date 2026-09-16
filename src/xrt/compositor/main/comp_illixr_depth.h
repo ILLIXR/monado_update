@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: BSL-1.0
 #pragma once
 
-// Linux-only conversion resources. Kept separate from the Windows RG/motion
-// vector path: FFmpeg expects grayscale RGBA, not raw D16 or packed RG depth.
+// Linux-only conversion resources. Two output formats depending on whether
+// this build needs spacewarp-grade depth:
+//   USING_OPENXR set (Quest/spacewarp client): 16-bit depth packed into RG8,
+//     matching Windows' depth16_to_rg.comp byte-for-byte, since Quest
+//     spacewarp requires the same 16-bit precision regardless of which
+//     server platform produced it.
+//   USING_OPENXR not set: grayscale packed into RGBA8. FFmpeg expects
+//     grayscale RGBA, not raw D16 or packed RG depth, and 8-bit precision is
+//     sufficient when spacewarp isn't in play.
 #include "util/comp_swapchain.h"
 #include "util/comp_render_helpers.h"
 #include "../drivers/illixr/illixr_framebuffer.h"
+#ifdef USING_OPENXR
+#include "shaders/illixr_depth16_to_rg.comp.h"
+#else
 #include "shaders/illixr_depth.comp.h"
+#endif
 
 struct illixr_linux_depth
 {
@@ -67,7 +78,11 @@ illixr_linux_depth_init(struct illixr_linux_depth *d, struct vk_bundle *vk,
     DEPTH_CHECK(vk->vkCreatePipelineLayout(vk->device, &pl, NULL, &d->layout));
     VkShaderModuleCreateInfo sm = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+#ifdef USING_OPENXR
+        .codeSize = sizeof(shaders_illixr_depth16_to_rg_comp), .pCode = shaders_illixr_depth16_to_rg_comp,
+#else
         .codeSize = sizeof(shaders_illixr_depth_comp), .pCode = shaders_illixr_depth_comp,
+#endif
     };
     DEPTH_CHECK(vk->vkCreateShaderModule(vk->device, &sm, NULL, &module));
     VkComputePipelineCreateInfo cp = {
@@ -105,6 +120,16 @@ illixr_linux_depth_init(struct illixr_linux_depth *d, struct vk_bundle *vk,
     };
     DEPTH_CHECK(vk->vkAllocateDescriptorSets(vk->device, &da, d->sets));
 
+#ifdef USING_OPENXR
+    // 16-bit depth packed into RG8 (matches Windows' depth16_to_rg.comp),
+    // for spacewarp clients that require full depth precision.
+    const VkFormat depth_image_format = VK_FORMAT_R8G8_UNORM;
+#else
+    // Grayscale packed into RGBA8 -- see the format comment at the top of
+    // this file for why.
+    const VkFormat depth_image_format = VK_FORMAT_R8G8B8A8_UNORM;
+#endif
+
     for (uint32_t i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
         // CUDA imports this same allocation. External image creation AND
         // exportable allocation are required; a plain device allocation fails.
@@ -114,7 +139,7 @@ illixr_linux_depth_init(struct illixr_linux_depth *d, struct vk_bundle *vk,
         };
         VkImageCreateInfo image = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = &ext,
-            .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+            .imageType = VK_IMAGE_TYPE_2D, .format = depth_image_format,
             .extent = {width, height, 1}, .mipLevels = 1, .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -142,7 +167,7 @@ illixr_linux_depth_init(struct illixr_linux_depth *d, struct vk_bundle *vk,
         DEPTH_CHECK(vk->vkBindImageMemory(vk->device, d->images[i].image, d->images[i].memory, 0));
         VkImageViewCreateInfo view = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = d->images[i].image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = depth_image_format,
             .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1},
         };
         DEPTH_CHECK(vk->vkCreateImageView(vk->device, &view, NULL, &d->images[i].view));

@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: BSL-1.0
+// Linux offload depth, USING_OPENXR (spacewarp) path: pack full 16-bit depth
+// into RG8, matching Windows' depth16_to_rg.comp byte-for-byte so the client
+// reconstruction (R = high byte, G = low byte) is identical regardless of
+// which platform the server ran on. Sampling uses the same rect-based
+// sub-image crop as illixr_depth.comp (the Linux grayscale path used when
+// USING_OPENXR is not set), since Monado's depth swapchain is read the same
+// way in both cases -- only the output format and packing differ.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0) uniform sampler2D source_depth;
+layout(rg8, set = 0, binding = 1) writeonly uniform image2D encoded_depth;
+layout(push_constant) uniform Parameters { vec4 rect; } params;
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(encoded_depth);
+    if (any(greaterThanEqual(pixel, size))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    float depth_normalized = texture(source_depth, params.rect.xy + uv * params.rect.zw).r;
+
+    // Convert to 16-bit unsigned integer (0 to 65535). Matches
+    // depth16_to_rg.comp's rounding exactly: add 0.5 before truncation.
+    uint depth_16bit = uint(depth_normalized * 65535.0 + 0.5);
+
+    // Split into two 8-bit channels, same as depth16_to_rg.comp.
+    uint r = (depth_16bit >> 8) & 0xFFu; // High byte (bits 15-8)
+    uint g = depth_16bit & 0xFFu;        // Low byte (bits 7-0)
+
+    imageStore(encoded_depth, pixel, vec4(float(r) / 255.0, float(g) / 255.0, 0.0, 0.0));
+}

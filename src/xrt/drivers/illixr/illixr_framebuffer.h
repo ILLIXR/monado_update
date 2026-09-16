@@ -43,9 +43,11 @@ struct illixr_framebuffer
 	VkDeviceSize depth_attachment_offset;
 	VkExtent2D depth_attachment_extent;
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if (defined(__linux__) && !defined(__ANDROID__)) || defined(XRT_OS_WINDOWS)
     // Stable allocation metadata lives above. This flag describes only the
     // current frame, published under the buffer-pool ownership handoff.
+    // On Windows this is consumed by the NVENC path only -- FFmpeg is
+    // Linux-only in this codebase.
     uint32_t depth_valid;
 #endif
 

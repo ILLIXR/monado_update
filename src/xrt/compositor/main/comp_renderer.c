@@ -2549,6 +2549,12 @@ illixr_gfx_dispatch_done:;
 				// vector feature; with no motion vectors there is nothing to
 				// downsample depth for.
 #ifdef XRT_OS_WINDOWS
+				// Default to invalid; only the fully-successful path below sets
+				// this true. Every failure branch (no layer, no swapchain, index
+				// out of range) leaves this false rather than silently keeping
+				// whatever a previous frame set, so a stale depth_image handle
+				// is never mistaken for fresh data.
+				r->illixr_framebuffers[fb_idx].depth_valid = 0;
 				if (proj_layer != NULL && proj_layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
 					uint32_t depth_sc_index = 2 + eye;
 					struct xrt_swapchain *depth_swapchain = proj_layer->sc_array[depth_sc_index];
@@ -2699,6 +2705,11 @@ illixr_gfx_dispatch_done:;
 							    proj_layer->data.depth.d[eye].near_z;
 							r->illixr_framebuffers[fb_idx].far_z =
 							    proj_layer->data.depth.d[eye].far_z;
+							// Real depth was written above this frame -- NVENC's
+							// per-frame skip check (offload_rendering_server.cpp)
+							// relies on this to avoid pairing fresh color with a
+							// stale depth image.
+							r->illixr_framebuffers[fb_idx].depth_valid = 1;
 
 							// Calculate buffer_idx for logging
 							uint32_t buffer_idx = fb_idx / 2;
