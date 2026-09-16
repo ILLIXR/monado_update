@@ -185,6 +185,39 @@ illixr_mv_create_swapchain(struct xrt_compositor *xc,
 #endif // XRT_OS_WINDOWS
 #endif
 
+#if defined(USE_MONADO_ILLIXR_DRIVER) && defined(__linux__) && !defined(__ANDROID__)
+static xrt_result_t
+illixr_linux_swapchain_properties(struct xrt_compositor *xc,
+                                  const struct xrt_swapchain_create_info *info,
+                                  struct xrt_swapchain_create_properties *properties)
+{
+    xrt_result_t result = comp_swapchain_get_create_properties(info, properties);
+    if (result == XRT_SUCCESS && strcmp(comp_compositor(xc)->xdev->str, "ILLIXR") == 0 &&
+        (info->bits & XRT_SWAPCHAIN_USAGE_COLOR)) {
+        // The projection fast path blits color into per-eye scratch/encode
+        // images. Advertise this to the client too, so both exported and
+        // imported VkImages are created with transfer-source usage.
+        properties->extra_bits |= XRT_SWAPCHAIN_USAGE_TRANSFER_SRC;
+    }
+    return result;
+}
+
+static xrt_result_t
+illixr_linux_create_swapchain(struct xrt_compositor *xc,
+                              const struct xrt_swapchain_create_info *info,
+                              struct xrt_swapchain **out_xsc)
+{
+    struct comp_compositor *c = comp_compositor(xc);
+    struct xrt_swapchain_create_properties properties = {0};
+    xrt_result_t result = illixr_linux_swapchain_properties(xc, info, &properties);
+    if (result != XRT_SUCCESS) return result;
+    // Also enforce the advertised bits for callers that create directly.
+    struct xrt_swapchain_create_info actual = *info;
+    actual.bits |= properties.extra_bits;
+    return comp_swapchain_create(&c->base.vk, &c->base.cscs, &actual, &properties, out_xsc);
+}
+#endif
+
 #define WINDOW_TITLE "Monado"
 
 DEBUG_GET_ONCE_BOOL_OPTION(disable_deferred, "XRT_COMPOSITOR_DISABLE_DEFERRED", false)
@@ -620,6 +653,11 @@ static const char *optional_instance_extensions[] = {
 // Note: Keep synchronized with comp_vk_glue - we should have everything they
 // do, plus VK_KHR_SWAPCHAIN_EXTENSION_NAME
 static const char *required_device_extensions[] = {
+#if defined(USE_MONADO_ILLIXR_DRIVER) && defined(__linux__) && !defined(__ANDROID__)
+    // FFmpeg creates alias-capable images. Monado can request Vulkan 1.0,
+    // where aliasing needs bind_memory2 enabled explicitly (not just supported).
+    VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+#endif
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,                 //
     VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,      //
     VK_KHR_EXTERNAL_FENCE_EXTENSION_NAME,            //
@@ -829,7 +867,11 @@ compositor_init_vulkan(struct comp_compositor *c)
 	}
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	// illixr_destroy_timewarp();
-	illixr_initialize_vulkan_display_service(vk->instance, vk->physical_device, vk->device, vk->queue, vk->queue_family_index, vk_args.enabled_instance_extensions, vk_args.enabled_device_extensions);
+	illixr_initialize_vulkan_display_service(vk->instance, vk->physical_device, vk->device, vk->queue, vk->queue_family_index, vk_args.enabled_instance_extensions, vk_args.enabled_device_extensions
+#if defined(__linux__) && !defined(__ANDROID__)
+                                               , &vk->queue_mutex
+#endif
+    );
 	u_string_list_destroy(&vk_args.enabled_instance_extensions);
 	u_string_list_destroy(&vk_args.enabled_device_extensions);
 #endif
@@ -1125,6 +1167,10 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 
 	// Do this as early as possible.
 	comp_base_init(&c->base);
+#if defined(USE_MONADO_ILLIXR_DRIVER) && defined(__linux__) && !defined(__ANDROID__)
+    c->base.base.base.get_swapchain_create_properties = illixr_linux_swapchain_properties;
+    c->base.base.base.create_swapchain = illixr_linux_create_swapchain;
+#endif
 
 #if defined(USE_MONADO_ILLIXR_DRIVER) && defined(XRT_OS_WINDOWS)
 	// Wrap create_swapchain to capture the ILLIXR motion vector swapchain

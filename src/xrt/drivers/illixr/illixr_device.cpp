@@ -266,12 +266,13 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		float fov_right = scale * ILLIXR::server_params::fov_right[eye];
 		float fov_up = scale * ILLIXR::server_params::fov_up[eye];
 		float fov_down = scale * ILLIXR::server_params::fov_down[eye];
-#ifdef USING_OPENXR
+		// These are Monado device FOVs regardless of ILLIXR's internal pose format.
 		dh->base.hmd->distortion.fov[eye].angle_left = fov_left;
 		dh->base.hmd->distortion.fov[eye].angle_right = fov_right;
 		dh->base.hmd->distortion.fov[eye].angle_up = fov_up;
 		dh->base.hmd->distortion.fov[eye].angle_down = fov_down;
-#endif
+		fprintf(stderr, "[ILLIXR FOV] headset=%s overscan=%.6f eye=%d L/R/U/D=%.6f,%.6f,%.6f,%.6f radians\n",
+		        ILLIXR::server_params::headset.c_str(), scale, eye, fov_left, fov_right, fov_up, fov_down);
 	}
 
 	// Setup variable tracker.

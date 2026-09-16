@@ -49,6 +49,9 @@
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #include "../drivers/illixr/illixr_component.h"
 #include "shaders/depth16_to_rg_spirv.h"
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "main/comp_illixr_depth.h"
+#endif
 
 #define MOTION_VECTOR_WIDTH 432
 #define MOTION_VECTOR_HEIGHT 432
@@ -171,6 +174,9 @@ struct comp_renderer
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
 	struct illixr_framebuffer illixr_framebuffers[2 * OFFLOAD_BUFFER_POOL_SIZE];
+#if defined(__linux__) && !defined(__ANDROID__)
+    struct illixr_linux_depth linux_depth;
+#endif
 
 	// Depth-to-RG conversion pipeline: only ever used to accompany motion
 	// vectors, so it shares their Windows-only gating (see below).
@@ -574,8 +580,10 @@ renderer_close_renderings_and_fences(struct comp_renderer *r)
 // since that call takes a one-time snapshot of the image handles.
 static void
 create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+#if !defined(__linux__) || defined(__ANDROID__)
 static void
 create_illixr_depth_full_images(struct comp_renderer *r, uint32_t width, uint32_t height);
+#endif
 #ifdef XRT_OS_WINDOWS
 static void
 create_illixr_depth_downsampled_images(struct comp_renderer *r, uint32_t width, uint32_t height);
@@ -713,6 +721,13 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
             // these depth_* fields with the downsampled/RG-encoded depth
             // instead, since that's the resolution the motion-vector pipeline
             // actually keeps refreshed per-frame.
+#if defined(__linux__) && !defined(__ANDROID__)
+            if (!illixr_linux_depth_init(&r->linux_depth, &r->c->base.vk,
+                                        r->illixr_framebuffers, color_width, color_height)) {
+                COMP_ERROR(r->c, "Failed to initialize Linux depth conversion");
+                return false;
+            }
+#else
             create_illixr_depth_full_images(r, color_width, color_height);
             for (int i = 0; i < 2 * OFFLOAD_BUFFER_POOL_SIZE; i++) {
                 r->illixr_framebuffers[i].depth_image = r->illixr_depth_full[i].image;
@@ -723,6 +738,8 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
                 r->illixr_framebuffers[i].depth_extent.width = r->illixr_depth_full[i].width;
                 r->illixr_framebuffers[i].depth_extent.height = r->illixr_depth_full[i].height;
             }
+
+#endif
 
 #ifdef XRT_OS_WINDOWS
 			uint32_t depth_width = MOTION_VECTOR_WIDTH;
@@ -780,6 +797,7 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 		illixr_initialize_timewarp(r->target_render_pass.render_pass,
 		                           0, // subpass
 		                           extent,
+		                           (VkExtent2D){r->c->target->width, r->c->target->height},
 		                           tw_images,
 		                           tw_image_views,
 		                           tw_device_memory,
@@ -1270,7 +1288,12 @@ renderer_present_swapchain_image(struct comp_renderer *r, uint64_t desired_prese
 static void
 renderer_fini(struct comp_renderer *r)
 {
-	struct vk_bundle *vk = &r->c->base.vk;
+    struct vk_bundle *vk = &r->c->base.vk;
+#if defined(USE_MONADO_ILLIXR_DRIVER) && defined(__linux__) && !defined(__ANDROID__)
+    // Conversion descriptors/images must outlive all submitted commands.
+    vk->vkDeviceWaitIdle(vk->device);
+    illixr_linux_depth_fini(&r->linux_depth, vk);
+#endif
 
 #ifdef USE_MONADO_ILLIXR_DRIVER
 #ifdef XRT_OS_WINDOWS
@@ -1660,6 +1683,7 @@ create_illixr_color_downsampled_images(struct comp_renderer *r, uint32_t width, 
     COMP_INFO(c, "Created %d color downsampled images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
 
+#if !defined(__linux__) || defined(__ANDROID__)
 // Full-size depth images, cross-platform. Unlike the Windows-only depth
 // pipeline below (which downsamples to MOTION_VECTOR_WIDTH/HEIGHT for the
 // RG re-encode consumed alongside motion vectors), this is the plain
@@ -1764,6 +1788,8 @@ create_illixr_depth_full_images(struct comp_renderer *r, uint32_t width, uint32_
 
 	COMP_INFO(c, "Created %d full-size depth images", 2 * OFFLOAD_BUFFER_POOL_SIZE);
 }
+
+#endif
 
 #ifdef XRT_OS_WINDOWS
 static void
@@ -2697,6 +2723,13 @@ illixr_gfx_dispatch_done:;
 						          proj_layer ? proj_layer->data.type : -1);
 					}
 				}
+#elif defined(__linux__) && !defined(__ANDROID__)
+                // Allocation handles never change. Publish validity separately,
+                // after recording conversion of this slot's submitted depth.
+                r->illixr_framebuffers[fb_idx].depth_valid =
+                    illixr_linux_depth_record(&r->linux_depth, vk, render->r->cmd,
+                                             proj_layer, eye, fb_idx,
+                                             &r->illixr_framebuffers[fb_idx], fast_path);
 #else
 				// No motion vectors on this platform, so no RG re-encode --
 				// but the app's depth layer (if any) still gets blitted into
@@ -2973,7 +3006,9 @@ illixr_gfx_dispatch_done:;
 		// COMP_INFO(c, "ILLIXR: Waiting for GPU to complete all work");
 
 		// Wait for ALL GPU work to complete before releasing to encoder
-		vk->vkQueueWaitIdle(vk->queue);
+        // This queue is also used by the offload encoder thread. Use the same
+        // mutex as vk_locked_submit and the ILLIXR display-provider bridge.
+        renderer_wait_queue_idle(r);
 
 		/* for (int i = 0; i < unity_save_index; i++) {
 		        if (!unity_raw_saves[i].pending)

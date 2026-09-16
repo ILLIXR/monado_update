@@ -181,6 +181,8 @@ illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_
  *
  */
 
+struct os_mutex;
+
 void
 illixr_initialize_vulkan_display_service(VkInstance instance,
                                          VkPhysicalDevice physical_device,
@@ -188,12 +190,17 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
                                          VkQueue queue,
                                          uint32_t queue_family_index,
                                          struct u_string_list *enabled_instance_extensions,
-                                         struct u_string_list *enabled_device_extensions);
+                                         struct u_string_list *enabled_device_extensions
+#if defined(__linux__) && !defined(__ANDROID__)
+                                         , struct os_mutex *shared_queue_mutex
+#endif
+);
 
 void
 illixr_initialize_timewarp(VkRenderPass render_pass,
                            uint32_t subpass,
                            VkExtent2D extent,
+                           VkExtent2D output_extent,
                            VkImage *image,
                            VkImageView *image_view,
                            VkDeviceMemory *device_memory,

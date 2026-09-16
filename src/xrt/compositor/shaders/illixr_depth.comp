@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: BSL-1.0
+// Linux offload depth: preserve the legacy grayscale representation, without
+// sRGB conversion. Sampling a depth view handles D16/D24/D32 without a blit.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0) uniform sampler2D source_depth;
+layout(rgba8, set = 0, binding = 1) writeonly uniform image2D encoded_depth;
+layout(push_constant) uniform Parameters { vec4 rect; } params;
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(encoded_depth);
+    if (any(greaterThanEqual(pixel, size))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    float depth = texture(source_depth, params.rect.xy + uv * params.rect.zw).r;
+    imageStore(encoded_depth, pixel, vec4(depth, depth, depth, 1.0));
+}

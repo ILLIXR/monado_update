@@ -301,6 +301,11 @@ if(XRT_MODULE_COMPOSITOR_MAIN)
 	endif()
 	if(XRT_BUILD_DRIVER_ILLIXR)
 		embed_spirv_shader(comp_main shaders/depth16_to_rg.comp)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            # Use the existing word-aligned SPIR-V header generator.
+            spirv_shaders(ILLIXR_DEPTH_SHADER SOURCES shaders/illixr_depth.comp)
+            target_sources(comp_main PRIVATE ${ILLIXR_DEPTH_SHADER})
+        endif()
     endif()
 
 endif()

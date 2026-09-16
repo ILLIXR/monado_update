@@ -42,6 +42,7 @@
 #include "illixr/vk/vulkan_objects.hpp"
 
 #include "illixr_component.h"
+#include "illixr_display_provider.hpp"
 
 #include <cstdlib>
 
@@ -51,9 +52,6 @@ using namespace ILLIXR::data_format;
 
 const std::string PREFIX = "\e[0;32m[Monado ILLIXR]\e[0m ";
 
-class monado_vulkan_display_provider : public display_provider
-{
-};
 
 class monado_compositor_app : public app
 {
@@ -337,13 +335,20 @@ illixr_initialize_vulkan_display_service(VkInstance instance,
                                          VkQueue queue,
                                          uint32_t queue_family_index,
                                          struct u_string_list *enabled_instance_extensions,
-                                         struct u_string_list *enabled_device_extensions)
+                                         struct u_string_list *enabled_device_extensions
+#if defined(__linux__) && !defined(__ANDROID__)
+                                         , struct os_mutex *shared_queue_mutex
+#endif
+)
 {
 	auto ds = std::make_shared<monado_vulkan_display_provider>();
 	ds->vk_instance_ = instance;
 	ds->vk_physical_device_ = physical_device;
 	ds->vk_device_ = device;
 	ds->queues_[queue::GRAPHICS] = {queue, queue_family_index, queue::GRAPHICS, std::make_shared<std::mutex>()};
+#if defined(__linux__) && !defined(__ANDROID__)
+    ds->shared_queue_mutex = shared_queue_mutex;
+#endif
 
 	const char *const *exts = u_string_list_get_data(enabled_instance_extensions);
 	uint32_t ext_count = u_string_list_get_size(enabled_instance_extensions);
@@ -374,6 +379,7 @@ extern "C" void
 illixr_initialize_timewarp(VkRenderPass render_pass,
                            uint32_t subpass,
                            VkExtent2D extent,
+                           VkExtent2D output_extent,
                            VkImage *image,
                            VkImageView *image_view,
                            VkDeviceMemory *device_memory,
@@ -417,6 +423,10 @@ illixr_initialize_timewarp(VkRenderPass render_pass,
 
     auto buffer_pool = std::make_shared<vulkan::buffer_pool<BUFFER_TYPE>>(image_pool, depth_image_pool);
     illixr_plugin_obj->buffer_pool = buffer_pool;
+
+    // Timewarp viewports follow the actual output framebuffer, independently
+    // of the source/encoder extent (which remains the headset resolution).
+    illixr_plugin_obj->ds->swapchain_extent_ = output_extent;
 
     // Pass EVERYTHING through setup() - the only communication channel to the plugin
     illixr_plugin_obj->sb_timewarp->setup(render_pass, subpass, buffer_pool, true,

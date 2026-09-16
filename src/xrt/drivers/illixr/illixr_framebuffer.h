@@ -43,6 +43,12 @@ struct illixr_framebuffer
 	VkDeviceSize depth_attachment_offset;
 	VkExtent2D depth_attachment_extent;
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Stable allocation metadata lives above. This flag describes only the
+    // current frame, published under the buffer-pool ownership handoff.
+    uint32_t depth_valid;
+#endif
+
 #ifdef XRT_OS_WINDOWS
 // Motion vector image from Unity quad layer (RGBA16F, RG = NDC delta XY)
 	VkImage motion_vec_image;
