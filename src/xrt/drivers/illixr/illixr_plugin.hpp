@@ -31,7 +31,7 @@ class MY_EXPORT_API illixr_plugin : public threadloop
 {
 public:
 	illixr_plugin(const std::string &name_, phonebook *pb_);
-	hmd_config get_config(const float scale);
+	hmd_config get_config(float scale, bool double_width = false) const;
 
 	void ipd_callback(const switchboard::ptr<const data_format::ipd>& datum);
 
@@ -57,7 +57,7 @@ public:
 
 	std::shared_ptr<display_provider> ds;
 	switchboard::writer<switchboard::event_wrapper<time_point>> _m_vsync;
-	switchboard::network_writer<data_format::illixr_signal> signal_writer_;
+	std::optional<switchboard::network_writer<data_format::illixr_signal>> signal_writer_;
 
 	// Pose data readers — topics published by offload_rendering_server
 #ifdef USING_OPENXR

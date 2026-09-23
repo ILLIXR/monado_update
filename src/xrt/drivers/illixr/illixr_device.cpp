@@ -232,7 +232,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		return NULL;
 	}
 
-	hmd_config cfg = illixr_plugin_->get_config(scale);
+	hmd_config cfg = illixr_plugin_->get_config(scale, true);
 	// Setup info.
 	struct u_device_simple_info info;
 	info.display.w_pixels = (uint32_t)(cfg.recommended_image_width);
