@@ -30,7 +30,7 @@ illixr_result_to_xr(struct oxr_logger *log, xrt_result_t xret, const char *func)
 	switch (xret) {
 	case XRT_SUCCESS: return XR_SUCCESS;
 	case XRT_ERROR_ILLIXR_TOPIC_UNAVAILABLE:
-		return oxr_error(log, XR_ERROR_VALIDATION_FAILURE, "(%s) Topic is not available", func);
+		return oxr_error(log, XR_ERROR_TOPIC_UNAVAILABLE_IXR, "(%s) Topic is not available", func);
 	case XRT_ERROR_ILLIXR_PAYLOAD_MISMATCH:
 		return oxr_error(log, XR_ERROR_VALIDATION_FAILURE, "(%s) Payload type or version does not match topic",
 		                 func);
