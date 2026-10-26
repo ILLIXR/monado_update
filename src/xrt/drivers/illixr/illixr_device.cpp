@@ -84,6 +84,8 @@ static void
 illixr_hmd_destroy(struct xrt_device *xdev)
 {
 	struct illixr_hmd *dh = illixr_hmd(xdev);
+	dh->base.illixr_topics_supported = false;
+	illixr_plugin_.reset();
 	dh->runtime->stop();
 	delete dh->runtime;
 	delete dh->runtime_lib;
@@ -128,13 +130,19 @@ illixr_hmd_get_view_poses(struct xrt_device *xdev,
 {
 	u_device_get_view_poses(xdev, default_eye_relation, at_timestamp_ns, view_count, out_head_relation, out_fovs,
 	                        out_poses);
+}
+
 static xrt_result_t
 illixr_hmd_publish(struct xrt_device *xdev,
                    uint32_t topic_id,
                    const struct xrt_illixr_payload_info *info,
                    const void *data)
 {
-	return illixr_plugin_->publish_topic(topic_id, info, data);
+	std::shared_ptr<illixr_plugin> plugin = illixr_plugin_;
+	if (plugin == nullptr) {
+		return XRT_ERROR_ILLIXR_TOPIC_UNAVAILABLE;
+	}
+	return plugin->publish_topic(topic_id, info, data);
 }
 
 static xrt_result_t
@@ -143,7 +151,11 @@ illixr_hmd_read_latest(struct xrt_device *xdev,
                        struct xrt_illixr_payload_info *info,
                        void *data)
 {
-	return illixr_plugin_->read_topic_latest(topic_id, info, data);
+	std::shared_ptr<illixr_plugin> plugin = illixr_plugin_;
+	if (plugin == nullptr) {
+		return XRT_ERROR_ILLIXR_TOPIC_UNAVAILABLE;
+	}
+	return plugin->read_topic_latest(topic_id, info, data);
 }
 
 static std::vector<std::string>
@@ -265,12 +277,6 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
 	}
 
-	// start ILLIXR runtime
-	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
-		DH_ERROR(dh, "Failed to load ILLIXR Runtime");
-		illixr_hmd_destroy(&dh->base);
-		return NULL;
-	}
 	struct u_device_simple_info info;
 	info.display.w_pixels = (uint32_t)(get_server_width() * scale);
 	info.display.h_pixels = (uint32_t)(get_server_height() * scale);
