@@ -312,6 +312,80 @@ err_mask_unlock:
 	return XRT_ERROR_IPC_FAILURE;
 }
 
+static xrt_result_t
+ipc_client_hmd_illixr_publish(struct xrt_device *xdev,
+                              uint32_t topic_id,
+                              const struct xrt_illixr_payload_info *info,
+                              const void *data)
+{
+	ipc_client_hmd_t *ich = ipc_client_hmd(xdev);
+	struct ipc_connection *ipc_c = ich->ipc_c;
+	xrt_result_t xret;
+	
+	// Checked before sending anything, the server would drop the connection.
+	if (info->data_size > IPC_ILLIXR_MAX_VARLEN) {
+		IPC_ERROR(ipc_c, "ILLIXR payload too large for varlen: %u", info->data_size);
+		return XRT_ERROR_IPC_FAILURE;
+	}
+
+	ipc_client_connection_lock(ipc_c);
+
+	xret = ipc_send_device_illixr_publish_locked(ipc_c, ich->device_id, topic_id, info);
+	IPC_CHK_WITH_GOTO(ipc_c, xret, "ipc_send_device_illixr_publish_locked", out);
+
+	if (info->data_size > 0) {
+		xret = ipc_send(&ipc_c->imc, data, info->data_size);
+		IPC_CHK_WITH_GOTO(ipc_c, xret, "ipc_send: ILLIXR payload", out);
+	}
+
+	xret = ipc_receive_device_illixr_publish_locked(ipc_c);
+
+out:
+	ipc_client_connection_unlock(ipc_c);
+	return xret;
+}
+
+static xrt_result_t
+ipc_client_hmd_illixr_read_latest(struct xrt_device *xdev,
+                                  uint32_t topic_id,
+                                  struct xrt_illixr_payload_info *info,
+                                  void *data)
+{
+	ipc_client_hmd_t *ich = ipc_client_hmd(xdev);
+	struct ipc_connection *ipc_c = ich->ipc_c;
+	struct xrt_illixr_payload_info request = *info;
+	struct xrt_illixr_payload_info reply_info = {0};
+	xrt_result_t xret;
+
+	// The server rejects anything larger, larger payloads would need shared memory.
+	if (request.data_capacity > IPC_ILLIXR_MAX_VARLEN) {
+		request.data_capacity = IPC_ILLIXR_MAX_VARLEN;
+	}
+
+	ipc_client_connection_lock(ipc_c);
+
+	xret = ipc_send_device_illixr_read_latest_locked(ipc_c, ich->device_id, topic_id, &request);
+	IPC_CHK_WITH_GOTO(ipc_c, xret, "ipc_send_device_illixr_read_latest_locked", out);
+
+	// Returns the server's reply.result, no payload follows unless it is success.
+	xret = ipc_receive_device_illixr_read_latest_locked(ipc_c, &reply_info);
+	if (xret != XRT_SUCCESS) {
+		goto out;
+	}
+
+	// Same rule as the server, compared against the capacity we actually sent.
+	if (reply_info.data_size > 0 && reply_info.data_size <= request.data_capacity) {
+		xret = ipc_receive(&ipc_c->imc, data, reply_info.data_size);
+		IPC_CHK_WITH_GOTO(ipc_c, xret, "ipc_receive: ILLIXR payload", out);
+	}
+
+	*info = reply_info;
+
+out:
+	ipc_client_connection_unlock(ipc_c);
+	return xret;
+}
+
 /*!
  * @public @memberof ipc_client_hmd
  */
@@ -396,7 +470,11 @@ ipc_client_hmd_create(struct ipc_connection *ipc_c, struct xrt_tracking_origin *
 	ich->base.form_factor_check_supported = isdev->form_factor_check_supported;
 	ich->base.stage_supported = isdev->stage_supported;
 	ich->base.battery_status_supported = isdev->battery_status_supported;
-    ich->base.illixr_topics_supported = isdev->illixr_topics_supported;
+	ich->base.illixr_topics_supported = isdev->illixr_topics_supported;
+	if (ich->base.illixr_topics_supported) {
+		ich->base.illixr_publish = ipc_client_hmd_illixr_publish;
+		ich->base.illixr_read_latest = ipc_client_hmd_illixr_read_latest;
+	}
 
 	return &ich->base;
 }
