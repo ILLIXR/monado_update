@@ -372,6 +372,25 @@ oxr_system_get_body_tracking_fb_support(struct oxr_logger *log, struct oxr_insta
 	return oxr_system_get_body_tracking_support(log, inst, XRT_INPUT_FB_BODY_TRACKING);
 }
 
+#ifdef OXR_HAVE_IXR_switchboard
+struct xrt_device *
+oxr_system_get_illixr_device(struct oxr_system *sys)
+{
+    struct xrt_device *xdev = GET_XDEV_BY_ROLE(sys, head);
+    if (xdev == NULL || !xdev->illixr_topics_supported) {
+        return NULL;
+    }
+
+    return xdev;
+}
+
+bool
+oxr_system_get_illixr_topics_support(struct oxr_logger *log, struct oxr_instance *inst)
+{
+    return oxr_system_get_illixr_device(&inst->system) != NULL;
+}
+#endif
+
 XrResult
 oxr_system_get_properties(struct oxr_logger *log, struct oxr_system *sys, XrSystemProperties *properties)
 {
@@ -508,6 +527,17 @@ oxr_system_get_properties(struct oxr_logger *log, struct oxr_system *sys, XrSyst
 	}
 #endif // OXR_HAVE_MNDX_xdev_space
 
+#ifdef OXR_HAVE_IXR_switchboard
+    XrSystemSwitchboardPropertiesIXR *xdev_switchboard_props = NULL;
+    if (sys->inst->extensions.IXR_switchboard) {
+        xdev_switchboard_props = OXR_GET_OUTPUT_FROM_CHAIN(properties, XR_TYPE_SYSTEM_SWITCHBOARD_PROPERTIES_IXR,
+                                                           XrSystemSwitchboardPropertiesIXR);
+    }
+
+    if (xdev_switchboard_props) {
+        xdev_switchboard_props->supportsSwitchboard = oxr_system_get_illixr_topics_support(log, sys->inst);
+    }
+#endif
 	return XR_SUCCESS;
 }
 

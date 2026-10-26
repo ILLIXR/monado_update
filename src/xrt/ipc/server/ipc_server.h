@@ -141,6 +141,9 @@ struct ipc_client_state
 	struct ipc_app_state client_state;
 
 	int server_thread_index;
+
+    //! Receive buffer for varlen ILLIXR publishes, IPC_ILLIXR_MAX_VARLEN bytes.
+    uint8_t *illixr_scratch;
 };
 
 enum ipc_thread_state

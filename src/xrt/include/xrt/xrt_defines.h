@@ -1796,6 +1796,16 @@ struct xrt_body_joint_set
 	struct xrt_space_relation body_pose;
 };
 
+struct xrt_illixr_payload_info
+{
+    uint32_t data_type;
+    uint32_t data_version;
+    uint32_t data_capacity;
+    uint32_t data_size;
+    uint64_t sequence;
+    int64_t timestamp_ns;
+};
+
 /*!
  * Name of a output with a baked in type.
  *

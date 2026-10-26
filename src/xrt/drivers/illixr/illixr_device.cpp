@@ -41,12 +41,14 @@
 
 #include "illixr_component.h"
 #include "illixr_device_common.h"
+#include "illixr_plugin.hpp"
 
 /*
  *
  * Structs and defines.
  *
  */
+static std::shared_ptr<illixr_plugin> illixr_plugin_ = nullptr;
 
 struct illixr_hmd
 {
@@ -126,6 +128,22 @@ illixr_hmd_get_view_poses(struct xrt_device *xdev,
 {
 	u_device_get_view_poses(xdev, default_eye_relation, at_timestamp_ns, view_count, out_head_relation, out_fovs,
 	                        out_poses);
+static xrt_result_t
+illixr_hmd_publish(struct xrt_device *xdev,
+                   uint32_t topic_id,
+                   const struct xrt_illixr_payload_info *info,
+                   const void *data)
+{
+	return illixr_plugin_->publish_topic(topic_id, info, data);
+}
+
+static xrt_result_t
+illixr_hmd_read_latest(struct xrt_device *xdev,
+                       uint32_t topic_id,
+                       struct xrt_illixr_payload_info *info,
+                       void *data)
+{
+	return illixr_plugin_->read_topic_latest(topic_id, info, data);
 }
 
 static std::vector<std::string>
@@ -173,7 +191,7 @@ illixr_rt_launch(struct illixr_hmd *dh, const char *path, const char *comp)
 	dh->runtime->load_so(split(std::string{comp}, ':'));
 #endif
 	dh->runtime->load_plugin_factory((ILLIXR::plugin_factory)illixr_monado_create_plugin);
-
+	illixr_plugin_ = std::dynamic_pointer_cast<illixr_plugin>(dh->runtime->get_last_plugin());
 	return 0;
 }
 
@@ -212,6 +230,10 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	dh->base.orientation_tracking_supported = true;
 	dh->base.position_tracking_supported = true;
 
+	dh->base.illixr_publish = illixr_hmd_publish;
+	dh->base.illixr_read_latest = illixr_hmd_read_latest;
+	dh->base.illixr_topics_supported = true;
+
 	// Read framerate from environment variable
 	if (std::getenv("ILLIXR_OFFLOAD_RENDERING_FRAMERATE") != nullptr) {
 		dh->base.hmd->screens[0].nominal_frame_interval_ns =
@@ -243,7 +265,12 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 		scale = std::stof(std::getenv("ILLIXR_OVERSCAN"));
 	}
 
-	// Setup info.
+	// start ILLIXR runtime
+	if (illixr_rt_launch(dh, dh->path, dh->comp) != 0) {
+		DH_ERROR(dh, "Failed to load ILLIXR Runtime");
+		illixr_hmd_destroy(&dh->base);
+		return NULL;
+	}
 	struct u_device_simple_info info;
 	info.display.w_pixels = (uint32_t)(get_server_width() * scale);
 	info.display.h_pixels = (uint32_t)(get_server_height() * scale);
@@ -302,9 +329,9 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 	printf("[ILLIXR] HMD device created successfully\n");
 	printf("[ILLIXR]   ILLIXR_OFFLOAD_FRAMES=%s\n",
 	       std::getenv("ILLIXR_OFFLOAD_FRAMES") ? std::getenv("ILLIXR_OFFLOAD_FRAMES") : "(not set)");
-	printf("[ILLIXR]   get_tracked_pose:        %p\n",   (void *)dh->base.get_tracked_pose);
-	printf("[ILLIXR]   update_inputs:           %p\n",   (void *)dh->base.update_inputs);
-	printf("[ILLIXR]   destroy:                 %p\n",   (void *)dh->base.destroy);
+	printf("[ILLIXR]   get_tracked_pose:        %p\n", (void *)dh->base.get_tracked_pose);
+	printf("[ILLIXR]   update_inputs:           %p\n", (void *)dh->base.update_inputs);
+	printf("[ILLIXR]   destroy:                 %p\n", (void *)dh->base.destroy);
 	printf("[ILLIXR] ==========================================\n");
 	printf("[ILLIXR] Returning device at address: %p\n", (void *)&dh->base);
 

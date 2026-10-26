@@ -747,6 +747,17 @@
 #define OXR_EXTENSION_SUPPORT_MNDX_xdev_space(_)
 #endif
 
+/*
+ * XR_IXR_switchboard
+ */
+#if defined(XR_IXR_switchboard) && defined(XRT_FEATURE_OPENXR_IXR_SWITCHBOARD)
+#define OXR_HAVE_IXR_switchboard
+#define OXR_EXTENSION_SUPPORT_IXR_switchboard(_) \
+    _(IXR_switchboard, IXR_SWITCHBOARD)
+#else
+#define OXR_EXTENSION_SUPPORT_IXR_switchboard(_)
+#endif
+
 // end of GENERATED per-extension defines - do not modify - used by scripts
 
 /*!
@@ -834,5 +845,6 @@
     OXR_EXTENSION_SUPPORT_MNDX_force_feedback_curl(_) \
     OXR_EXTENSION_SUPPORT_MNDX_hydra(_) \
     OXR_EXTENSION_SUPPORT_MNDX_system_buttons(_) \
-    OXR_EXTENSION_SUPPORT_MNDX_xdev_space(_)
+    OXR_EXTENSION_SUPPORT_MNDX_xdev_space(_) \
+    OXR_EXTENSION_SUPPORT_IXR_switchboard(_)
 // clang-format on

@@ -44,6 +44,9 @@
 #define IPC_SHARED_MAX_OUTPUTS 128
 #define IPC_SHARED_MAX_BINDINGS 64
 
+#define IPC_MAX_CLIENT_ILLIXR_TOPICS 32
+#define IPC_ILLIXR_MAX_VARLEN (50 * 1024)
+
 // example: v21.0.0-560-g586d33b5
 #define IPC_VERSION_NAME_LEN 64
 
@@ -145,6 +148,7 @@ struct ipc_shared_device
 	bool form_factor_check_supported;
 	bool stage_supported;
 	bool battery_status_supported;
+    bool illixr_topics_supported;
 };
 
 static_assert(sizeof(struct ipc_shared_device) == 560,

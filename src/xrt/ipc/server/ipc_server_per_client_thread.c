@@ -345,6 +345,9 @@ ipc_server_client_destroy_session_and_compositor(volatile struct ipc_client_stat
 
 	// Cast away volatile.
 	xrt_session_destroy((struct xrt_session **)&ics->xs);
+
+    free(ics->illixr_scratch);
+    ics->illixr_scratch = NULL;
 }
 
 void *

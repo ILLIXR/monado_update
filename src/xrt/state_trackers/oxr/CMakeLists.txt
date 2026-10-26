@@ -27,6 +27,7 @@ add_library(
 	oxr_api_system.c
 	oxr_api_verify.h
 	oxr_api_xdev.c
+	oxr_api_illixr.c
 	oxr_binding.c
 	oxr_chain.h
 	oxr_dpad.c
@@ -35,6 +36,7 @@ add_library(
 	oxr_frame_sync.c
 	oxr_frame_sync.h
 	oxr_handle_base.c
+	oxr_illixr.c
 	oxr_input.c
 	oxr_input_transform.c
 	oxr_input_transform.h

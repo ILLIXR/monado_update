@@ -43,102 +43,17 @@
 
 #include "illixr_component.h"
 #include "illixr_display_provider.hpp"
+#include "illixr_plugin.hpp"
 
 #include <cstdlib>
-
-using namespace ILLIXR;
-using namespace ILLIXR::vulkan;
-using namespace ILLIXR::data_format;
 
 const std::string PREFIX = "\e[0;32m[Monado ILLIXR]\e[0m ";
 
 
-class monado_compositor_app : public app
-{
-};
-
 static std::atomic<bool> _ds_ready = false;
 
+
 // Simulated plugin class for an instance during phonebook registration
-class illixr_plugin : public plugin
-{
-public:
-	illixr_plugin(const std::string &name_, phonebook *pb_)
-	    : plugin{name_, pb_}, pb{pb_}, sb{phonebook_->lookup_impl<switchboard>()},
-	      sb_pose{phonebook_->lookup_impl<pose_prediction>()}, sb_clock{phonebook_->lookup_impl<relative_clock>()},
-	      ds{std::make_shared<monado_vulkan_display_provider>()},
-	      _m_vsync{sb->get_writer<switchboard::event_wrapper<time_point>>("vsync_estimate")}
-#ifdef USING_OPENXR
-	      ,
-	      hand_pose_reader_{sb->get_reader<pose::hand_joint_poses_pair>("hand_poses")},
-	      hand_interaction_reader_{sb->get_reader<pose::hand_interaction_poses_pair>("hand_interactions")},
-	      palm_pose_reader_{sb->get_reader<pose::palm_poses_pair>("palm_poses")}
-#endif
-	      ,
-	      latency_reader_{sb->get_reader<latency_ping>("latency_ping")}
-	{
-		sb_timewarp = pb_->lookup_impl<timewarp>();
-
-		if (std::getenv("ILLIXR_OFFLOAD_FRAMES") != nullptr) {
-			offload_frames = std::stoi(std::getenv("ILLIXR_OFFLOAD_FRAMES"));
-		}
-
-		if (std::getenv("ILLIXR_COMPOSITOR_SLEEP_NS") != nullptr) {
-			sleep_time = std::stoi(std::getenv("ILLIXR_COMPOSITOR_SLEEP_NS"));
-		}
-
-#ifdef USING_OPENXR
-		// Check if hand tracking is enabled
-		if (std::getenv("ILLIXR_USE_HAND_TRACKING") != nullptr) {
-			std::string val = std::getenv("ILLIXR_USE_HAND_TRACKING");
-			hand_tracking_enabled_ = (val == "1" || val == "true" || val == "TRUE");
-		} else {
-			// Default to enabled if offloading frames
-			hand_tracking_enabled_ = offload_frames;
-		}
-
-		if (std::getenv("ILLIXR_USE_PALM_POSES") != nullptr) {
-			std::string val = std::getenv("ILLIXR_USE_PALM_POSES");
-			palm_poses_enabled_ = (val == "1" || val == "true" || val == "TRUE");
-		}
-
-		if (std::getenv("ILLIXR_USE_HAND_INTERACTIONS") != nullptr) {
-			std::string val = std::getenv("ILLIXR_USE_HAND_INTERACTIONS");
-			hand_interactions_enabled_ = (val == "1" || val == "true" || val == "TRUE");
-		}
-#endif
-	}
-
-	std::atomic<bool> ready = false;
-
-	bool offload_frames = false;
-	int sleep_time = -1;
-#ifdef USING_OPENXR
-	bool hand_tracking_enabled_ = false;
-	bool palm_poses_enabled_ = false;
-	bool hand_interactions_enabled_ = false;
-#endif
-
-	phonebook *pb;
-	const std::shared_ptr<switchboard> sb;
-	const std::shared_ptr<pose_prediction> sb_pose;
-	const std::shared_ptr<relative_clock> sb_clock;
-	std::shared_ptr<timewarp> sb_timewarp;
-	std::shared_ptr<vulkan::buffer_pool<BUFFER_TYPE>> buffer_pool;
-
-	std::shared_ptr<display_provider> ds;
-	switchboard::writer<switchboard::event_wrapper<time_point>> _m_vsync;
-
-	// Pose data readers — topics published by offload_rendering_server
-#ifdef USING_OPENXR
-	switchboard::reader<pose::hand_joint_poses_pair> hand_pose_reader_;
-	switchboard::reader<pose::hand_interaction_poses_pair> hand_interaction_reader_;
-	switchboard::reader<pose::palm_poses_pair> palm_pose_reader_;
-#endif
-	switchboard::reader<data_format::latency_ping> latency_reader_;
-
-	BUFFER_TYPE last_pose{};
-};
 
 static illixr_plugin *illixr_plugin_obj = nullptr;
 
@@ -146,7 +61,6 @@ extern "C" void *
 illixr_monado_create_plugin(void *phonebook_)
 {
 	illixr_plugin_obj = new illixr_plugin{"illixr_plugin", static_cast<phonebook *>(phonebook_)};
-	illixr_plugin_obj->start();
 	return static_cast<void *>(illixr_plugin_obj);
 }
 
@@ -322,6 +236,7 @@ illixr_read_hand_interaction(int hand, struct illixr_hand_interaction_data *out_
 	return out_data->valid;
 }
 #endif
+
 /*
  *
  * Vulkan display service functions

@@ -536,6 +536,27 @@
 			{"name": "charging", "type": "bool"},
 			{"name": "charge", "type": "float"}
 		]
+	},
+
+	"device_illixr_publish": {
+		"varlen": true,
+		"in": [
+			{"name": "id", "type": "uint32_t"},
+			{"name": "topic_id", "type": "uint32_t"},
+			{"name": "info", "type": "struct xrt_illixr_payload_info"}
+		]
+	},
+
+	"device_illixr_read_latest": {
+		"varlen": true,
+		"in": [
+			{"name": "id", "type": "uint32_t"},
+			{"name": "topic_id", "type": "uint32_t"},
+			{"name": "info", "type": "struct xrt_illixr_payload_info"}
+		],
+		"out": [
+			{"name": "info", "type": "struct xrt_illixr_payload_info"}
+		]
 	}
 
 }

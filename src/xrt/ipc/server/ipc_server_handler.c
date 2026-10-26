@@ -2262,3 +2262,112 @@ ipc_handle_device_get_battery_status(
 	struct xrt_device *xdev = get_xdev(ics, id);
 	return xrt_device_get_battery_status(xdev, out_present, out_charging, out_charge);
 }
+
+static xrt_result_t
+get_illixr_scratch(volatile struct ipc_client_state *ics, uint8_t **out_scratch)
+{
+    if (ics->illixr_scratch == NULL) {
+        ics->illixr_scratch = U_TYPED_ARRAY_CALLOC(uint8_t, IPC_ILLIXR_MAX_VARLEN);
+        if (ics->illixr_scratch == NULL) {
+            return XRT_ERROR_ALLOCATION;
+        }
+    }
+
+    *out_scratch = ics->illixr_scratch;
+
+    return XRT_SUCCESS;
+}
+
+xrt_result_t
+ipc_handle_device_illixr_publish(volatile struct ipc_client_state *ics,
+                                 uint32_t id,
+                                 uint32_t topic_id,
+                                 const struct xrt_illixr_payload_info *info)
+{
+    struct ipc_message_channel *imc = (struct ipc_message_channel *)&ics->imc;
+    struct ipc_result_reply reply = XRT_STRUCT_INIT;
+    uint8_t *scratch = NULL;
+    xrt_result_t xret;
+
+    // The client streams data_size bytes right after the message, if we can't take
+    // them the stream is out of sync, so these failures end the connection.
+    if (info->data_size > IPC_ILLIXR_MAX_VARLEN) {
+        IPC_ERROR(ics->server, "ILLIXR publish payload too large: %u", info->data_size);
+        return XRT_ERROR_IPC_FAILURE;
+    }
+
+    xret = get_illixr_scratch(ics, &scratch);
+    if (xret != XRT_SUCCESS) {
+        IPC_ERROR(ics->server, "Failed to allocate ILLIXR scratch buffer");
+        return XRT_ERROR_IPC_FAILURE;
+    }
+
+    if (info->data_size > 0) {
+        xret = ipc_receive(imc, scratch, info->data_size);
+        if (xret != XRT_SUCCESS) {
+            IPC_ERROR(ics->server, "Failed to receive ILLIXR payload");
+            return xret;
+        }
+    }
+
+    // From here on the stream is in sync, errors go back to the client in the reply.
+    struct xrt_device *xdev = get_xdev(ics, id);
+    if (xdev == NULL) {
+        reply.result = XRT_ERROR_IPC_FAILURE;
+    } else if (xdev->illixr_publish == NULL) {
+        reply.result = XRT_ERROR_NOT_IMPLEMENTED;
+    } else {
+        reply.result = xrt_device_illixr_publish(xdev, topic_id, info, scratch);
+    }
+
+    return ipc_send(imc, &reply, sizeof(reply));
+}
+
+xrt_result_t
+ipc_handle_device_illixr_read_latest(volatile struct ipc_client_state *ics,
+                                     uint32_t id,
+                                     uint32_t topic_id,
+                                     const struct xrt_illixr_payload_info *info)
+{
+    struct ipc_message_channel *imc = (struct ipc_message_channel *)&ics->imc;
+    struct ipc_device_illixr_read_latest_reply reply = XRT_STRUCT_INIT;
+    uint8_t *scratch = NULL;
+    xrt_result_t xret;
+
+    // Nothing follows the message on a read, so every error can go in the reply.
+    if (info->data_capacity > IPC_ILLIXR_MAX_VARLEN) {
+        reply.result = XRT_ERROR_IPC_FAILURE;
+    } else {
+        reply.result = get_illixr_scratch(ics, &scratch);
+    }
+
+    if (reply.result == XRT_SUCCESS) {
+        struct xrt_device *xdev = get_xdev(ics, id);
+        if (xdev == NULL) {
+            reply.result = XRT_ERROR_IPC_FAILURE;
+        } else if (xdev->illixr_read_latest == NULL) {
+            reply.result = XRT_ERROR_NOT_IMPLEMENTED;
+        } else {
+            reply.info = *info;
+            reply.result = xrt_device_illixr_read_latest(xdev, topic_id, &reply.info, scratch);
+        }
+    }
+
+    // Must match the client: payload follows only on success and only if it fits.
+    bool send_payload = reply.result == XRT_SUCCESS && reply.info.data_size <= info->data_capacity;
+
+    xret = ipc_send(imc, &reply, sizeof(reply));
+    if (xret != XRT_SUCCESS) {
+        IPC_ERROR(ics->server, "Failed to send ILLIXR read reply");
+        return xret;
+    }
+
+    if (send_payload && reply.info.data_size > 0) {
+        xret = ipc_send(imc, scratch, reply.info.data_size);
+        if (xret != XRT_SUCCESS) {
+            IPC_ERROR(ics->server, "Failed to send ILLIXR payload");
+        }
+    }
+
+    return xret;
+}

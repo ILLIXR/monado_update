@@ -347,6 +347,11 @@ handle_non_null(struct oxr_instance *inst, struct oxr_logger *log, const char *n
 	ENTRY_IF_EXT(xrCreateXDevSpaceMNDX, MNDX_xdev_space);
 #endif // OXR_HAVE_MNDX_xdev_space
 
+#ifdef OXR_HAVE_IXR_switchboard
+    ENTRY_IF_EXT(xrPublishIXR, IXR_switchboard);
+    ENTRY_IF_EXT(xrReadLatestIXR, IXR_switchboard);
+#endif
+
 #ifdef OXR_HAVE_KHR_locate_spaces
 	ENTRY_IF_EXT(xrLocateSpacesKHR, KHR_locate_spaces);
 #endif

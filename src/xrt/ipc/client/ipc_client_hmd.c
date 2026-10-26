@@ -396,6 +396,7 @@ ipc_client_hmd_create(struct ipc_connection *ipc_c, struct xrt_tracking_origin *
 	ich->base.form_factor_check_supported = isdev->form_factor_check_supported;
 	ich->base.stage_supported = isdev->stage_supported;
 	ich->base.battery_status_supported = isdev->battery_status_supported;
+    ich->base.illixr_topics_supported = isdev->illixr_topics_supported;
 
 	return &ich->base;
 }

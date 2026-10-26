@@ -284,6 +284,7 @@ struct xrt_device
 	bool face_tracking_supported;
 	bool body_tracking_supported;
 	bool battery_status_supported;
+    bool illixr_topics_supported;
 
 	/*
 	 *
@@ -549,10 +550,37 @@ struct xrt_device
 	 */
 	xrt_result_t (*end_feature)(struct xrt_device *xdev, enum xrt_device_feature_type type);
 
-	/*!
-	 * Destroy device.
-	 */
-	void (*destroy)(struct xrt_device *xdev);
+    /*!
+     * Publish a payload to an ILLIXR switchboard topic.
+     *
+     * @param[in] xdev     The device.
+     * @param[in] topic_id The topic to publish to.
+     * @param[in] info     Payload description, data_size is the number of bytes at data.
+     * @param[in] data     The payload, only valid for the duration of the call.
+     */
+    xrt_result_t (*illixr_publish)(struct xrt_device *xdev,
+                                   uint32_t topic,
+                                   const struct xrt_illixr_payload_info *info,
+                                   const void *data);
+
+    /*!
+     * Read the latest payload from an ILLIXR switchboard topic.
+     *
+     * @param[in]     xdev     The device.
+     * @param[in]     topic_id The topic to read from.
+     * @param[in,out] info     In: data_capacity is the size of data. Out: data_size, sequence and timestamp
+     *                         of the latest payload. The payload is only copied if data_size <= data_capacity.
+     * @param[out]    data     Buffer for the payload.
+     */
+    xrt_result_t (*illixr_read_latest)(struct xrt_device *xdev,
+                                       uint32_t topic,
+                                       struct xrt_illixr_payload_info *info,
+                                       void *data);
+
+    /*!
+     * Destroy device.
+     */
+    void (*destroy)(struct xrt_device *xdev);
 
 	// Add new functions above destroy.
 };
@@ -778,6 +806,34 @@ static inline xrt_result_t
 xrt_device_end_feature(struct xrt_device *xdev, enum xrt_device_feature_type type)
 {
 	return xdev->end_feature(xdev, type);
+}
+
+/*!
+ * Helper function for @ref xrt_device::illixr_publish.
+ *
+ * @copydoc xrt_device::illixr_publish
+ *
+ * @public @memberof xrt_device
+ */
+static inline xrt_result_t
+xrt_device_illixr_publish(struct xrt_device *xdev, uint32_t topic_id, const struct xrt_illixr_payload_info *info,
+                          const void *data)
+{
+    return xdev->illixr_publish(xdev, topic_id, info, data);
+}
+
+/*!
+ * Helper function for @ref xrt_device::illixr_read_latest.
+ *
+ * @copydoc xrt_device::illixr_read_latest
+ *
+ * @public @memberof xrt_device
+ */
+static inline xrt_result_t
+xrt_device_illixr_read_latest(struct xrt_device *xdev, uint32_t topic_id, struct xrt_illixr_payload_info *info,
+                              void *data)
+{
+    return xdev->illixr_read_latest(xdev, topic_id, info, data);
 }
 
 /*!

@@ -673,6 +673,13 @@ oxr_xrGetFaceExpressionWeights2FB(XrFaceTracker2FB faceTracker,
                                   XrFaceExpressionWeights2FB *expressionWeights);
 #endif
 
+#ifdef OXR_HAVE_IXR_switchboard
+XRAPI_ATTR XrResult XRAPI_CALL
+oxr_xrPublishIXR(XrSession session, uint32_t topicId, const XrEnvelopeIXR *envelope);
+
+XRAPI_ATTR XrResult XRAPI_CALL
+oxr_xrReadLatestIXR(XrSession session, uint32_t topicId, XrEnvelopeIXR *envelope);
+#endif
 /*
  *
  * oxr_api_xdev.c

@@ -1062,6 +1062,20 @@ oxr_system_get_face_tracking2_fb_support(struct oxr_logger *log,
 bool
 oxr_system_get_body_tracking_fb_support(struct oxr_logger *log, struct oxr_instance *inst);
 
+#ifdef OXR_HAVE_IXR_switchboard
+bool
+oxr_system_get_illixr_topics_support(struct oxr_logger *log, struct oxr_instance *inst);
+
+XrResult
+oxr_illixr_publish(struct oxr_logger *log, struct oxr_session *session, uint32_t topicId, const XrEnvelopeIXR *envelope);
+
+XrResult
+oxr_illixr_read_latest(struct oxr_logger *log, struct oxr_session *session, uint32_t topicId, XrEnvelopeIXR *envelope);
+
+struct xrt_device *
+oxr_system_get_illixr_device(struct oxr_system *sys);
+#endif
+
 /*
  *
  * oxr_event.cpp

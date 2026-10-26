@@ -278,6 +278,23 @@ u_device_ni_is_form_factor_available(struct xrt_device *xdev, enum xrt_form_fact
 xrt_result_t
 u_device_ni_get_battery_status(struct xrt_device *xdev, bool *out_present, bool *out_charging, float *out_charge);
 
+/*!
+ * Not implemented function for @ref xrt_device::illixr_publish.
+ *
+ * @ingroup aux_util
+ */
+xrt_result_t
+u_device_ni_illixr_publish(struct xrt_device *xdev, uint64_t topic_id, const struct xrt_illixr_payload_info *info,
+                           const void *data);
+
+/*!
+ * Not implemented function for @ref xrt_device::illixr_read_latest.
+ *
+ * @ingroup aux_util
+ */
+xrt_result_t
+u_device_ni_illixr_read_latest(struct xrt_device *xdev, uint64_t topic_id, const struct xrt_illixr_payload_info *info,
+                               const void *data);
 
 #ifdef __cplusplus
 }
