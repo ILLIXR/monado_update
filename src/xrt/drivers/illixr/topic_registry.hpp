@@ -2,6 +2,7 @@
 
 #include "illixr/data_format/openxr_data.hpp"
 #include "illixr/data_format/openxr_payloads.h"
+#include "illixr/network/topic_config.hpp"
 #include "illixr/switchboard.hpp"
 
 #include "xrt/xrt_device.h"
@@ -83,6 +84,30 @@ private:
     switchboard::writer<event_type> writer_;
 };
 
+template<typename Payload>
+class network_writer_endpoint : public topic_endpoint {
+public:
+	using event_type = ixr_event<Payload>;
+	
+	network_writer_endpoint(const std::shared_ptr<switchboard>& sb, const std::string& topic_name,
+				network::topic_config config= {})
+	    : writer_{sb->get_network_writer<event_type>(topic_name, config)} { }
+
+	xrt_result_t publish(const xrt_illixr_payload_info& info, const void* data) override {
+		if (!payload_matches<Payload>(info) || info.data_size != sizeof(Payload) || data == nullptr) {
+			return XRT_ERROR_ILLIXR_PAYLOAD_MISMATCH;
+		}
+
+		Payload payload;
+		std::memcpy(&payload, data, sizeof(Payload)); // data may not be aligned for Payload
+		writer_.put(writer_.allocate(payload, now_monotonic_ns()));
+		return XRT_SUCCESS;
+	}
+
+private:
+	switchboard::network_writer<event_type> writer_;
+};
+
 // ILLIXR -> App
 template<typename Payload>
 class reader_endpoint : public topic_endpoint {
@@ -148,6 +173,11 @@ public:
         set(topic_id, std::make_unique<writer_endpoint<Payload>>(switchboard_, topic_name));
     }
 
+    template<typename Payload>
+    void add_network_writer(uint32_t topic_id, const std::string& topic_name, network::topic_config config = {}) {
+	    set(topic_id, std::make_unique<network_writer_endpoint<Payload>>(switchboard_, topic_name, config));
+    }
+    
     template<typename Payload>
     void add_reader(uint32_t topic_id, const std::string& topic_name) {
         set(topic_id, std::make_unique<reader_endpoint<Payload>>(switchboard_, topic_name));

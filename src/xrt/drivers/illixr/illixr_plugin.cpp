@@ -2,6 +2,9 @@
 #include "illixr_display_provider.hpp"
 
 #include "illixr/data_format/poses/head_pose.hpp"
+#include "illixr/data_format/openxr_payloads.h"
+#include "illixr/data_format/openxr_data.hpp"
+#include "illixr/data_format/serialization/openxr_payloads.hpp"
 
 illixr_plugin::illixr_plugin(const std::string &name_, phonebook *pb_)
     : threadloop{name_, pb_}, pb{pb_}, sb{phonebook_->lookup_impl<switchboard>()},
@@ -18,8 +21,11 @@ illixr_plugin::illixr_plugin(const std::string &name_, phonebook *pb_)
       latency_reader_{sb->get_reader<latency_ping>("latency_ping")},
       registry_{sb}
 {
+    register_ixr_serialization();  // DO NOT REMOVE, while this is a dummy call, it forces the linker to include the serialization obj file
     // App -> ILLIXR
-    registry_.add_writer<ixr_foo_data>(IXR_TOPIC_FOO, "oxr_input");
+    registry_.add_network_writer<ixr_foo_data>(IXR_TOPIC_FOO, "oxr_relay", network::topic_config{network::topic_config::BOOST,
+    	                                                                                         network::topic_config::UDP});
+    //registry_.add_writer<ixr_foo_data>(IXR_TOPIC_FOO, "oxr_input");
 
     // ILLIXR -> App
     registry_.add_reader<ixr_foo_data>(IXR_TOPIC_FOO_ECHO, "oxr_output");

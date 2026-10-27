@@ -396,6 +396,15 @@ if(XRT_BUILD_DRIVER_ILLIXR)
 		illixr/illixr_plugin.hpp
 		illixr/illixr_plugin.cpp
 		)
+	if (XRT_FEATURE_OPENXR_IXR_SWITCHBOARD)
+		target_sources(drv_illixr PUBLIC
+					   illixr/payload_traits.hpp
+					   illixr/topic_registry.hpp
+					   ${ILLIXR_PATH}/illixr/data_format/openxr_payloads.h
+					   ${ILLIXR_PATH}/illixr/data_format/serialization/openxr_payloads.hpp
+					   ${ILLIXR_PATH}/../utils/serialization/openxr_payloads.cpp
+		)
+	endif()
 	target_link_libraries(drv_illixr PUBLIC
 	                      ${CMAKE_DL_LIBS}
 						  xrt-interfaces
