@@ -21,6 +21,9 @@
 #include "xrt/xrt_defines.h"
 
 #include "payload_traits.hpp"
+#ifdef ILLIXR_DUMP_AUDIO
+#include "audio_dump.hpp"
+#endif
 
 using namespace ILLIXR;
 using namespace ILLIXR::data_format;
@@ -47,7 +50,11 @@ public:
 	
 	xrt_result_t
 	read_topic_next(uint32_t topic_id, xrt_illixr_payload_info *info, void *data) noexcept;
-	
+
+#ifdef ILLIXR_DUMP_AUDIO
+	void capture_from_server(const switchboard::ptr<const ixr_event<ixr_audio_chunk>>& event);
+	void capture_from_client(const switchboard::ptr<const ixr_event<ixr_audio_chunk>>& event);
+#endif
 	bool offload_frames = false;
 	int sleep_time = -1;
 #ifdef USING_OPENXR
@@ -65,7 +72,10 @@ public:
 
 	std::shared_ptr<display_provider> ds;
 	switchboard::writer<switchboard::event_wrapper<time_point>> _m_vsync;
-
+#ifdef ILLIXR_DUMP_AUDIO
+	switchboard::network_writer<ixr_event<ixr_audio_chunk>> audio_writer_;
+	switchboard::writer<ixr_event<ixr_audio_chunk>> audio_relay_;
+#endif
 	// Pose data readers - topics published by offload_rendering_server
 #ifdef USING_OPENXR
 	switchboard::reader<pose::hand_joint_poses_pair> hand_pose_reader_;
@@ -75,4 +85,9 @@ public:
 	switchboard::reader<data_format::latency_ping> latency_reader_;
 	topic_registry registry_;
 	BUFFER_TYPE last_pose{};
+	
+#ifdef ILLIXR_DUMP_AUDIO
+	audio_dump server_dump_;
+	audio_dump client_dump_;
+#endif
 };
