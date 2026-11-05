@@ -578,6 +578,20 @@ struct xrt_device
                                        void *data);
 
     /*!
+     * Read the latest payload from an ILLIXR switchboard topic.
+     *
+     * @param[in]     xdev     The device.
+     * @param[in]     topic_id The topic to read from.
+     * @param[in,out] info     In: data_capacity is the size of data. Out: data_size, sequence and timestamp
+     *                         of the latest payload. The payload is only copied if data_size <= data_capacity.
+     * @param[out]    data     Buffer for the payload.
+     */
+    xrt_result_t (*illixr_read_next)(struct xrt_device *xdev,
+				                     uint32_t topic,
+				                     struct xrt_illixr_payload_info *info,
+				                     void *data);
+    
+    /*!
      * Destroy device.
      */
     void (*destroy)(struct xrt_device *xdev);
@@ -834,6 +848,20 @@ xrt_device_illixr_read_latest(struct xrt_device *xdev, uint32_t topic_id, struct
                               void *data)
 {
     return xdev->illixr_read_latest(xdev, topic_id, info, data);
+}
+
+/*!
+ * Helper function for @ref xrt_device::illixr_read_latest.
+ *
+ * @copydoc xrt_device::illixr_read_latest
+ *
+ * @public @memberof xrt_device
+ */
+static inline xrt_result_t
+xrt_device_illixr_read_next(struct xrt_device *xdev, uint32_t topic_id, struct xrt_illixr_payload_info *info,
+			                void *data)
+{
+	return xdev->illixr_read_next(xdev, topic_id, info, data);
 }
 
 /*!

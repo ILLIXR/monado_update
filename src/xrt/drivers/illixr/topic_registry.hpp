@@ -58,6 +58,12 @@ public:
         (void) data;
         return XRT_ERROR_ILLIXR_PAYLOAD_MISMATCH;
     }
+    
+    virtual xrt_result_t read_next(xrt_illixr_payload_info& info, void* data) {
+	(void) info;
+	(void) data;
+	return XRT_ERROR_ILLIXR_PAYLOAD_MISMATCH;
+    }
 };
 
 // App -> ILLIXR
@@ -159,6 +165,57 @@ private:
     uint64_t                          sequence_ = 0;
 };
 
+// ILLIXR -> App
+template<typename Payload>
+class buffered_reader_endpoint : public topic_endpoint {
+public:
+	using event_type = ixr_event<Payload>;
+	
+	buffered_reader_endpoint(const std::shared_ptr<switchboard>& sb, const std::string& topic_name)
+	    : reader_{sb->get_buffered_reader<event_type>(topic_name)} { }
+
+	xrt_result_t read_next(xrt_illixr_payload_info& info, void* data) override {
+		if (!payload_matches<Payload>(info)) {
+			return XRT_ERROR_ILLIXR_PAYLOAD_MISMATCH;
+		}
+
+		auto event = reader_.try_dequeue();
+		if (event == nullptr) {
+			// Nothing published yet, sequence 0 tells the app there is no data.
+			info.data_size    = 0;
+			info.sequence     = 0;
+			info.timestamp_ns = 0;
+			return XRT_SUCCESS;
+		}
+
+		// Always report the size, copy only if it fits.
+		info.data_size = sizeof(Payload);
+		if (info.data_capacity < sizeof(Payload) || data == nullptr) {
+			return XRT_SUCCESS;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			// Holding the previous event keeps its address from being reused by a new one.
+			if (event != last_event_) {
+				last_event_ = event;
+				++sequence_;
+			}
+			info.sequence = sequence_;
+		}
+
+		std::memcpy(data, &event->data, sizeof(Payload));
+		info.timestamp_ns = event->timestamp_ns;
+		return XRT_SUCCESS;
+	}
+
+private:
+	switchboard::buffered_reader<event_type>   reader_;
+	std::mutex                                 mutex_;
+	std::shared_ptr<const event_type>          last_event_;
+	uint64_t                                   sequence_ = 0;
+};
+
 /*
  * Topic id -> endpoint. Filled in the plugin constructor and read-only afterward,
  * so lookups need no lock.
@@ -183,6 +240,11 @@ public:
         set(topic_id, std::make_unique<reader_endpoint<Payload>>(switchboard_, topic_name));
     }
 
+    template<typename Payload>
+    void add_buffered_reader(uint32_t topic_id, const std::string& topic_name) {
+	    set(topic_id, std::make_unique<buffered_reader_endpoint<Payload>>(switchboard_, topic_name));
+    }
+    
     [[nodiscard]] topic_endpoint* find(uint32_t topic_id) const {
         return topic_id < endpoints_.size() ? endpoints_[topic_id].get() : nullptr;
     }

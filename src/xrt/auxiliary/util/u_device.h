@@ -296,6 +296,15 @@ xrt_result_t
 u_device_ni_illixr_read_latest(struct xrt_device *xdev, uint64_t topic_id, const struct xrt_illixr_payload_info *info,
                                const void *data);
 
+/*!
+ * Not implemented function for @ref xrt_device::illixr_read_next.
+ *
+ * @ingroup aux_util
+ */
+xrt_result_t
+u_device_ni_illixr_read_next(struct xrt_device *xdev, uint64_t topic_id, const struct xrt_illixr_payload_info *info,
+			                 const void *data);
+
 #ifdef __cplusplus
 }
 #endif

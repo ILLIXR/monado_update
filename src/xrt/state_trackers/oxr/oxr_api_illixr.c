@@ -40,3 +40,16 @@ oxr_xrReadLatestIXR(XrSession session, uint32_t topicId, XrEnvelopeIXR *envelope
 
     return oxr_illixr_read_latest(&log, sess, topicId, envelope);
 }
+
+XRAPI_ATTR XrResult XRAPI_CALL
+oxr_xrReadNextIXR(XrSession session, uint32_t topicId, XrEnvelopeIXR *envelope) {
+	OXR_TRACE_MARKER();
+	
+	struct oxr_session *sess = NULL;
+	struct oxr_logger log;
+	OXR_VERIFY_SESSION_AND_INIT_LOG(&log, session, sess, "xrPublishIXR");
+	OXR_VERIFY_EXTENSION(&log, sess->sys->inst, IXR_switchboard);
+	OXR_VERIFY_ARG_TYPE_AND_NOT_NULL(&log, envelope, XR_TYPE_ENVELOPE_IXR);
+
+	return oxr_illixr_read_next(&log, sess, topicId, envelope);
+}

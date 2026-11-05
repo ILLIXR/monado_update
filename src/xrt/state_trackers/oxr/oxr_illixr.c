@@ -129,4 +129,47 @@ oxr_illixr_read_latest(struct oxr_logger *log, struct oxr_session *session, uint
 
 	return XR_SUCCESS;
 }
+
+XrResult
+oxr_illixr_read_next(struct oxr_logger *log, struct oxr_session *session, uint32_t topicId, XrEnvelopeIXR *envelope)
+{
+	struct xrt_device *xdev = oxr_system_get_illixr_device(session->sys);
+	if (xdev == NULL) {
+		return oxr_error(log, XR_ERROR_FUNCTION_UNSUPPORTED, "(xrReadNextIXR) No ILLIXR device in system");
+	}
+	
+	XrResult ret = verify_envelope(log, envelope, envelope->dataCapacity, "xrReadNextIXR");
+	if (ret != XR_SUCCESS) {
+		return ret;
+	}
+
+	struct xrt_illixr_payload_info info = {
+	    .data_type = envelope->dataType,
+	    .data_version = envelope->dataVersion,
+	    .data_capacity = envelope->dataCapacity,
+	    .data_size = 0,
+	    .sequence = 0,
+	    .timestamp_ns = 0,
+	};
+
+	xrt_result_t xret = xrt_device_illixr_read_next(xdev, topicId, &info, envelope->data);
+	ret = illixr_result_to_xr(log, xret, "xrReadNextIXR");
+	if (ret != XR_SUCCESS) {
+		return ret;
+	}
+
+	// Always report the size, the app needs it to grow its buffer.
+	envelope->dataSize = info.data_size;
+
+	if (info.data_size > envelope->dataCapacity) {
+		// Not an oxr_error, this is the normal two-call path and should not be logged as a failure.
+		return XR_ERROR_SIZE_INSUFFICIENT;
+	}
+
+	envelope->sequence = info.sequence;
+	envelope->timestamp = time_state_monotonic_to_ts_ns(session->sys->inst->timekeeping, info.timestamp_ns);
+
+	return XR_SUCCESS;
+}
+
 #endif

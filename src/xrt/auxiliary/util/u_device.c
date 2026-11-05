@@ -579,3 +579,11 @@ u_device_ni_illixr_read_latest(struct xrt_device *xdev, uint64_t topic_id, const
     E(illixr_read_latest);
     return XRT_ERROR_NOT_IMPLEMENTED;
 }
+
+xrt_result_t
+u_device_ni_illixr_read_next(struct xrt_device *xdev, uint64_t topic_id, const struct xrt_illixr_payload_info *info,
+			     const void *data)
+{
+	E(illixr_read_next);
+	return XRT_ERROR_NOT_IMPLEMENTED;
+}

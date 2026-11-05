@@ -40,12 +40,14 @@ typedef struct XrSystemSwitchboardPropertiesIXR {
 
 typedef XrResult(XRAPI_PTR* PFN_xrPublishIXR)(XrSession session, uint32_t topic, const XrEnvelopeIXR* envelope);
 typedef XrResult(XRAPI_PTR* PFN_xrReadLatestIXR)(XrSession session, uint32_t topicId, XrEnvelopeIXR* envelope);
+typedef XrResult(XRAPI_PTR* PFN_xrReadNextIXR)(XrSession session, uint32_t topicId, XrEnvelopeIXR* envelope);
 
 // Prototypes, only for code that links the functions directly, such as Monado itself
 #ifndef XR_NO_PROTOTYPES
 #ifdef XR_EXTENSION_PROTOTYPES
 XRAPI_ATTR XrResult XRAPI_CALL xrPublishIXR(XrSession session, uint32_t topicId, const XrEnvelopeIXR* envelope);
 XRAPI_ATTR XrResult XRAPI_CALL xrReadLatestIXR(XrSession session, uint32_t topicId,, XrEnvelopeIXR* envelope);
+XRAPI_ATTR XrResult XRAPI_CALL xrReadNextIXR(XrSession session, uint32_t topicId, XrEnvelopeIXR* envelope);
 #endif
 #endif
 

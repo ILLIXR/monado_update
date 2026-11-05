@@ -679,6 +679,9 @@ oxr_xrPublishIXR(XrSession session, uint32_t topicId, const XrEnvelopeIXR *envel
 
 XRAPI_ATTR XrResult XRAPI_CALL
 oxr_xrReadLatestIXR(XrSession session, uint32_t topicId, XrEnvelopeIXR *envelope);
+
+XRAPI_ATTR XrResult XRAPI_CALL
+oxr_xrReadNextIXR(XrSession session, uint32_t topicId, XrEnvelopeIXR *envelope);
 #endif
 /*
  *

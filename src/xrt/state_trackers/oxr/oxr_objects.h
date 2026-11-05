@@ -1072,6 +1072,9 @@ oxr_illixr_publish(struct oxr_logger *log, struct oxr_session *session, uint32_t
 XrResult
 oxr_illixr_read_latest(struct oxr_logger *log, struct oxr_session *session, uint32_t topicId, XrEnvelopeIXR *envelope);
 
+XrResult
+oxr_illixr_read_next(struct oxr_logger *log, struct oxr_session *session, uint32_t topicId, XrEnvelopeIXR *envelope);
+
 struct xrt_device *
 oxr_system_get_illixr_device(struct oxr_system *sys);
 #endif

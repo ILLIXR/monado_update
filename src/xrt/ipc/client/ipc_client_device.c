@@ -359,3 +359,44 @@ ipc_client_xdev_illixr_read_latest(struct xrt_device *xdev,
     ipc_client_connection_unlock(ipc_c);
     return xret;
 }
+
+static xrt_result_t
+ipc_client_xdev_illixr_read_next(struct xrt_device *xdev,
+				 uint64_t topic_id,
+				 struct xrt_illixr_payload_info *info,
+				 void *data)
+{
+	struct ipc_client_xdev *icx = ipc_client_xdev(xdev);
+	struct ipc_connection *ipc_c = icx->ipc_c;
+	struct xrt_illixr_payload_info request = *info;
+	struct xrt_illixr_payload_info reply_info = {0};
+	xrt_result_t xret;
+	
+	// The server rejects anything larger, larger payloads use shared memory.
+	if (request.data_capacity > IPC_ILLIXR_MAX_VARLEN) {
+		request.data_capacity = IPC_ILLIXR_MAX_VARLEN;
+	}
+
+	ipc_client_connection_lock(ipc_c);
+
+	xret = ipc_send_device_illixr_read_next_locked(ipc_c, icx->device_id, topic_id, &request);
+	IPC_CHK_WITH_GOTO(ipc_c, xret, "ipc_send_device_illixr_read_next_locked", out);
+
+	// Returns the server's reply.result, no payload follows unless it is success.
+	xret = ipc_receive_device_illixr_read_next_locked(ipc_c, &reply_info);
+	if (xret != XRT_SUCCESS) {
+		goto out;
+	}
+
+	// Same rule as the server, compared against the capacity we actually sent.
+	if (reply_info.data_size <= request.data_capacity && reply_info.data_size > 0) {
+		xret = ipc_receive(&ipc_c->imc, data, reply_info.data_size);
+		IPC_CHK_WITH_GOTO(ipc_c, xret, "ipc_receive: ILLIXR payload", out);
+	}
+
+	*info = reply_info;
+
+out:
+	ipc_client_connection_unlock(ipc_c);
+	return xret;
+}

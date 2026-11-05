@@ -44,6 +44,10 @@ public:
 
 	xrt_result_t
 	read_topic_latest(uint32_t topic_id, xrt_illixr_payload_info *info, void *data) noexcept;
+	
+	xrt_result_t
+	read_topic_next(uint32_t topic_id, xrt_illixr_payload_info *info, void *data) noexcept;
+	
 	bool offload_frames = false;
 	int sleep_time = -1;
 #ifdef USING_OPENXR

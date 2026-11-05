@@ -90,6 +90,29 @@ illixr_plugin::read_topic_latest(uint32_t topic_id, xrt_illixr_payload_info *inf
     }
 }
 
+xrt_result_t
+illixr_plugin::read_topic_next(uint32_t topic_id, xrt_illixr_payload_info *info, void *data) noexcept
+{
+	if (info == nullptr) {
+		return XRT_ERROR_ILLIXR_PAYLOAD_MISMATCH;
+	}
+	
+	try {
+		topic_endpoint* endpoint = registry_.find(topic_id);
+		if (endpoint == nullptr) {
+			return XRT_ERROR_ILLIXR_TOPIC_UNAVAILABLE;
+		}
+		return endpoint->read_next(*info, data);
+	} catch (const std::bad_alloc&) {
+		return XRT_ERROR_ALLOCATION;
+	} catch (const std::exception& e) {
+		spdlog::error("read_topic_latest({}): {}", topic_id, e.what());
+		return XRT_ERROR_ILLIXR_INTERNAL;
+	} catch (...) {
+		return XRT_ERROR_ILLIXR_INTERNAL;
+	}
+}
+
 void illixr_plugin::_p_one_iteration()
 {
 	std::this_thread::sleep_for(100ms);

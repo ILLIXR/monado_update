@@ -158,6 +158,19 @@ illixr_hmd_read_latest(struct xrt_device *xdev,
 	return plugin->read_topic_latest(topic_id, info, data);
 }
 
+static xrt_result_t
+illixr_hmd_read_next(struct xrt_device *xdev,
+		     uint32_t topic_id,
+		     struct xrt_illixr_payload_info *info,
+		     void *data)
+{
+	std::shared_ptr<illixr_plugin> plugin = illixr_plugin_;
+	if (plugin == nullptr) {
+		return XRT_ERROR_ILLIXR_TOPIC_UNAVAILABLE;
+	}
+	return plugin->read_topic_next(topic_id, info, data);
+}
+
 static std::vector<std::string>
 split(const std::string &s, char delimiter)
 {
@@ -244,6 +257,7 @@ illixr_hmd_create(const char *path_in, const char *comp_in)
 
 	dh->base.illixr_publish = illixr_hmd_publish;
 	dh->base.illixr_read_latest = illixr_hmd_read_latest;
+	dh->base.illixr_read_next = illixr_hmd_read_next;
 	dh->base.illixr_topics_supported = true;
 
 	// Read framerate from environment variable

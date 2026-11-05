@@ -350,6 +350,7 @@ handle_non_null(struct oxr_instance *inst, struct oxr_logger *log, const char *n
 #ifdef OXR_HAVE_IXR_switchboard
     ENTRY_IF_EXT(xrPublishIXR, IXR_switchboard);
     ENTRY_IF_EXT(xrReadLatestIXR, IXR_switchboard);
+    ENTRY_IF_EXT(xrReadNextIXR, IXR_switchboard);
 #endif
 
 #ifdef OXR_HAVE_KHR_locate_spaces
