@@ -6,6 +6,8 @@
 #include "illixr/data_format/openxr_data.hpp"
 #include "illixr/data_format/serialization/openxr_payloads.hpp"
 
+#include "netcode_endpoints.hpp"
+
 illixr_plugin::illixr_plugin(const std::string &name_, phonebook *pb_)
     : threadloop{name_, pb_}, pb{pb_}, sb{phonebook_->lookup_impl<switchboard>()},
       sb_pose{phonebook_->lookup_impl<pose_prediction>()}, sb_clock{phonebook_->lookup_impl<relative_clock>()},
@@ -54,7 +56,8 @@ illixr_plugin::illixr_plugin(const std::string &name_, phonebook *pb_)
     					     [this](const switchboard::ptr<const ixr_event<ixr_audio_chunk>>& event, std::size_t) {
     					       capture_from_client(event);
     	                                     });
-#endif    	                                     
+#endif
+    register_netcode_endpoints(registry_, sb, pb->lookup_impl<network::tcp_backend>());
 	sb_timewarp = pb_->lookup_impl<timewarp>();
 
 	offload_frames = sb->get_env_bool("ILLIXR_OFFLOAD_FRAMES", "false");

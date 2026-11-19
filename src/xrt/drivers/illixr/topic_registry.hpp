@@ -249,6 +249,10 @@ public:
         return topic_id < endpoints_.size() ? endpoints_[topic_id].get() : nullptr;
     }
 
+    /** Register an endpoint that does not wrap a plain C struct, such as the netcode endpoints. */
+    void add_endpoint(uint32_t topic_id, std::unique_ptr<topic_endpoint> endpoint) {
+	    set(topic_id, std::move(endpoint));
+    }
 private:
     void set(uint32_t topic_id, std::unique_ptr<topic_endpoint> endpoint) {
         if (topic_id >= endpoints_.size() || endpoints_[topic_id] != nullptr) {
